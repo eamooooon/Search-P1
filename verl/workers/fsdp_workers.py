@@ -17,8 +17,10 @@ The main entry point to run the PPO algorithm
 
 import logging
 import os
+import random
 import warnings
 
+import numpy as np
 import torch
 import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
@@ -42,6 +44,7 @@ from codetiming import Timer
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
+WORKER_STATE_DIRNAME = 'worker_state'
 
 
 class ActorRolloutRefWorker(Worker):
@@ -107,6 +110,45 @@ class ActorRolloutRefWorker(Worker):
             self.config.ref.log_prob_micro_batch_size //= (self.device_mesh.shape[0] //
                                                            self.ulysses_sequence_parallel_size)
             self.config.ref.log_prob_micro_batch_size *= self.config.rollout.n
+
+    def _get_rng_state(self):
+        return {
+            'python': random.getstate(),
+            'numpy': np.random.get_state(),
+            'torch': torch.get_rng_state(),
+            'torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
+
+    def _set_rng_state(self, rng_state):
+        random.setstate(rng_state['python'])
+        np.random.set_state(rng_state['numpy'])
+        torch.set_rng_state(rng_state['torch'])
+        if torch.cuda.is_available() and rng_state.get('torch_cuda') is not None:
+            torch.cuda.set_rng_state_all(rng_state['torch_cuda'])
+
+    def _get_worker_state_path(self, checkpoint_dir):
+        worker_state_dir = os.path.join(checkpoint_dir, WORKER_STATE_DIRNAME)
+        os.makedirs(worker_state_dir, exist_ok=True)
+        return os.path.join(worker_state_dir, f'rank_{self.rank}.pt')
+
+    def _save_worker_state(self, checkpoint_dir):
+        worker_state = {
+            'optimizer': self.actor_optimizer.state_dict() if self._is_actor else None,
+            'lr_scheduler': self.actor_lr_scheduler.state_dict() if self._is_actor else None,
+            'rng_state': self._get_rng_state(),
+        }
+        torch.save(worker_state, self._get_worker_state_path(checkpoint_dir))
+
+    def _load_worker_state(self, checkpoint_dir):
+        worker_state_path = self._get_worker_state_path(checkpoint_dir)
+        if not os.path.exists(worker_state_path):
+            raise FileNotFoundError(f'Cannot find actor worker state: {worker_state_path}')
+        worker_state = torch.load(worker_state_path, map_location='cpu')
+        if self._is_actor and worker_state.get('optimizer') is not None:
+            self.actor_optimizer.load_state_dict(worker_state['optimizer'])
+        if self._is_actor and worker_state.get('lr_scheduler') is not None:
+            self.actor_lr_scheduler.load_state_dict(worker_state['lr_scheduler'])
+        self._set_rng_state(worker_state['rng_state'])
 
     def _build_model_optimizer(self,
                                model_path,
@@ -300,8 +342,9 @@ class ActorRolloutRefWorker(Worker):
             else:
                 optim_config = None
                 fsdp_config = OmegaConf.create()
+            actor_model_path = self.config.actor.get('path', self.config.model.path)
             self.actor_module_fsdp, self.actor_optimizer, self.actor_lr_scheduler, self.actor_model_config = self._build_model_optimizer(
-                model_path=self.config.model.path,
+                model_path=actor_model_path,
                 fsdp_config=fsdp_config,
                 optim_config=optim_config,
                 override_model_config=override_model_config,
@@ -332,7 +375,8 @@ class ActorRolloutRefWorker(Worker):
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
         if self._is_ref:
-            self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
+            ref_model_path = self.config.ref.get('path', self.config.model.path)
+            self.ref_module_fsdp = self._build_model_optimizer(model_path=ref_model_path,
                                                                fsdp_config=self.config.ref.fsdp_config,
                                                                optim_config=None,
                                                                override_model_config=override_model_config,
@@ -525,14 +569,26 @@ class ActorRolloutRefWorker(Worker):
             os.makedirs(local_path, exist_ok=True)
             self.actor_module.save_pretrained(local_path, state_dict=state_dict)
             self.tokenizer.save_pretrained(local_path)
-            if hdfs_path is not None:
-                print(f'Uploading actor checkpoint to {hdfs_path}')
-                hdfs_io.makedirs(hdfs_path, exist_ok=True)
-                hdfs_io.copy(src=local_path, dst=hdfs_path)
-
+        self._save_worker_state(local_path)
+        torch.distributed.barrier()
+        if self.rank == 0 and hdfs_path is not None:
+            print(f'Uploading actor checkpoint to {hdfs_path}')
+            hdfs_io.makedirs(hdfs_path, exist_ok=True)
+            hdfs_io.copy(src=local_path, dst=hdfs_path)
         torch.distributed.barrier()
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_checkpoint(self, local_path):
+        assert self._is_actor
+
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=torch.cuda.current_device())
+        self._load_worker_state(local_path)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+        torch.distributed.barrier()
 
 
 class CriticWorker(Worker):
@@ -567,6 +623,43 @@ class CriticWorker(Worker):
         self.config.ppo_micro_batch_size //= (torch.distributed.get_world_size() // self.ulysses_sequence_parallel_size)
         self.config.forward_micro_batch_size //= (torch.distributed.get_world_size() //
                                                   self.ulysses_sequence_parallel_size)
+
+    def _get_rng_state(self):
+        return {
+            'python': random.getstate(),
+            'numpy': np.random.get_state(),
+            'torch': torch.get_rng_state(),
+            'torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
+
+    def _set_rng_state(self, rng_state):
+        random.setstate(rng_state['python'])
+        np.random.set_state(rng_state['numpy'])
+        torch.set_rng_state(rng_state['torch'])
+        if torch.cuda.is_available() and rng_state.get('torch_cuda') is not None:
+            torch.cuda.set_rng_state_all(rng_state['torch_cuda'])
+
+    def _get_worker_state_path(self, checkpoint_dir):
+        worker_state_dir = os.path.join(checkpoint_dir, WORKER_STATE_DIRNAME)
+        os.makedirs(worker_state_dir, exist_ok=True)
+        return os.path.join(worker_state_dir, f'rank_{self.rank}.pt')
+
+    def _save_worker_state(self, checkpoint_dir):
+        worker_state = {
+            'optimizer': self.critic_optimizer.state_dict(),
+            'lr_scheduler': self.critic_lr_scheduler.state_dict(),
+            'rng_state': self._get_rng_state(),
+        }
+        torch.save(worker_state, self._get_worker_state_path(checkpoint_dir))
+
+    def _load_worker_state(self, checkpoint_dir):
+        worker_state_path = self._get_worker_state_path(checkpoint_dir)
+        if not os.path.exists(worker_state_path):
+            raise FileNotFoundError(f'Cannot find critic worker state: {worker_state_path}')
+        worker_state = torch.load(worker_state_path, map_location='cpu')
+        self.critic_optimizer.load_state_dict(worker_state['optimizer'])
+        self.critic_lr_scheduler.load_state_dict(worker_state['lr_scheduler'])
+        self._set_rng_state(worker_state['rng_state'])
 
     def _build_critic_model_optimizer(self, config):
         # the following line is necessary
@@ -782,14 +875,24 @@ class CriticWorker(Worker):
             os.makedirs(local_path, exist_ok=True)
             self.critic_module._fsdp_wrapped_module.save_pretrained(local_path, state_dict=state_dict)
             self.tokenizer.save_pretrained(local_path)
-            if hdfs_path is not None:
-                print(f'Uploading critic checkpoint to {hdfs_path}')
-                hdfs_io.makedirs(hdfs_path, exist_ok=True)
-                hdfs_io.copy(src=local_path, dst=hdfs_path)
-
+        self._save_worker_state(local_path)
+        torch.distributed.barrier()
+        if self.rank == 0 and hdfs_path is not None:
+            print(f'Uploading critic checkpoint to {hdfs_path}')
+            hdfs_io.makedirs(hdfs_path, exist_ok=True)
+            hdfs_io.copy(src=local_path, dst=hdfs_path)
         torch.distributed.barrier()
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.critic_module, offload_grad=self._is_offload_grad)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_checkpoint(self, local_path):
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.critic_optimizer, device_id=torch.cuda.current_device())
+        self._load_worker_state(local_path)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.critic_optimizer)
+        torch.distributed.barrier()
 
 
 # TODO(sgm): we may need to extract it to dp_reward_model.py

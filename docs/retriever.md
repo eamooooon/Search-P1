@@ -20,7 +20,7 @@ For local retrievers, we use [wiki-18](https://huggingface.co/datasets/PeterJinG
 - If you want to train a general LLM search agent and have enough funding, choose **online search engine** (e.g., [SerpAPI](https://serpapi.com/)).
 
 
-- If you have a domain specific online search engine (e.g., PubMed search), you can refer to [link](https://github.com/PeterGriffinJin/Search-R1/blob/main/search_r1/search/serp_search_server.py) to integrate it to Search-R1 by yourself.
+- If you have a domain specific online search engine (e.g., PubMed search), you can refer to [link](https://github.com/PeterGriffinJin/Search-R1/blob/main/search_p1/search/serp_search_server.py) to integrate it to Search-R1 by yourself.
 
 Search engine launching scripts can be found at [link](https://github.com/PeterGriffinJin/Search-R1/tree/main/example/retriever).
 
@@ -42,7 +42,7 @@ index_file=$save_path/bm25
 corpus_file=$save_path/wiki-18.jsonl
 retriever_name=bm25
 
-python search_r1/search/retrieval_server.py --index_path $index_file --corpus_path $corpus_file --topk 3 --retriever_name $retriever_name
+python search_p1/search/retrieval_server.py --index_path $index_file --corpus_path $corpus_file --topk 3 --retriever_name $retriever_name
 ```
 
 
@@ -73,7 +73,7 @@ corpus_file=$save_path/wiki-18.jsonl
 retriever_name=e5
 retriever_path=intfloat/e5-base-v2
 
-python search_r1/search/retrieval_server.py --index_path $index_file --corpus_path $corpus_file --topk 3 --retriever_name $retriever_name --retriever_model $retriever_path --faiss_gpu
+python search_p1/search/retrieval_server.py --index_path $index_file --corpus_path $corpus_file --topk 3 --retriever_name $retriever_name --retriever_model $retriever_path --faiss_gpu
 
 ```
 
@@ -100,7 +100,7 @@ corpus_file=$save_path/wiki-18.jsonl
 retriever_name=e5
 retriever_path=intfloat/e5-base-v2
 
-python search_r1/search/retrieval_server.py --index_path $index_file --corpus_path $corpus_file --topk 3 --retriever_name $retriever_name --retriever_model $retriever_path
+python search_p1/search/retrieval_server.py --index_path $index_file --corpus_path $corpus_file --topk 3 --retriever_name $retriever_name --retriever_model $retriever_path
 ```
 
 
@@ -114,7 +114,7 @@ We support both [Google Search API](https://developers.google.com/custom-search/
 search_url=https://serpapi.com/search
 serp_api_key="" # put your serp api key here (https://serpapi.com/)
 
-python search_r1/search/serp_search_server.py --search_url $search_url --topk 3 --serp_api_key $serp_api_key
+python search_p1/search/serp_search_server.py --search_url $search_url --topk 3 --serp_api_key $serp_api_key
 ```
 
 #### Google online search server
@@ -123,6 +123,6 @@ python search_r1/search/serp_search_server.py --search_url $search_url --topk 3 
 api_key="" # put your google custom API key here (https://developers.google.com/custom-search/v1/overview)
 cse_id="" # put your google cse API key here (https://developers.google.com/custom-search/v1/overview)
 
-python search_r1/search/google_search_server.py --api_key $api_key --topk 5 --cse_id $cse_id --snippet_only
+python search_p1/search/google_search_server.py --api_key $api_key --topk 5 --cse_id $cse_id --snippet_only
 ```
 

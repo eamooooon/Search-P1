@@ -17,6 +17,8 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+import random
+import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -24,7 +26,6 @@ from enum import Enum
 from pprint import pprint
 from typing import Type, Dict
 
-import re
 import json
 from collections import defaultdict
 
@@ -39,10 +40,10 @@ from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 
-import re
-from search_r1.llm_agent.generation import LLMGenerationManager, GenerationConfig
+from search_p1.llm_agent.generation import LLMGenerationManager, GenerationConfig
 
 WorkerType = Type[Worker]
+TRAINER_STATE_FILENAME = 'trainer_state.pt'
 
 
 class Role(Enum):
@@ -344,6 +345,10 @@ class RayPPOTrainer(object):
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
+        self.seed = int(config.trainer.get('seed', 1))
+        self.resume_state = None
+        self.resume_dir = None
+        self.resume_paths = None
 
         # define KL control
         if self.use_reference_policy:
@@ -359,6 +364,7 @@ class RayPPOTrainer(object):
         else:
             self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.)
 
+        self._set_random_seed(self.seed)
         self._create_dataloader()
         self._init_logger()
     
@@ -370,9 +376,11 @@ class RayPPOTrainer(object):
                           config=OmegaConf.to_container(self.config, resolve=True))
 
     def _create_dataloader(self):
-        from torch.utils.data import DataLoader
+        from torch.utils.data import DataLoader, Subset
         # TODO: we have to make sure the batch size is divisible by the dp size
         from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
+        self._train_collate_fn = collate_fn
+        self._subset_cls = Subset
         self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
@@ -386,12 +394,6 @@ class RayPPOTrainer(object):
             else:
                 self.train_dataset.dataframe = self.train_dataset.dataframe.sample(self.config.data.train_data_num, random_state=42)
         print(f"filtered training dataset size: {len(self.train_dataset.dataframe)}")
-
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
-                                           shuffle=self.config.data.shuffle_train_dataloader,
-                                           drop_last=True,
-                                           collate_fn=collate_fn)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
@@ -413,14 +415,15 @@ class RayPPOTrainer(object):
                                          drop_last=True,
                                          collate_fn=collate_fn)
 
-        print(f'Size of train dataloader: {len(self.train_dataloader)}')
+        self.train_steps_per_epoch = len(self.train_dataset) // self.config.data.train_batch_size
+        print(f'Size of train dataloader: {self.train_steps_per_epoch}')
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
         
-        assert len(self.train_dataloader) >= 1
+        assert self.train_steps_per_epoch >= 1
         assert len(self.val_dataloader) >= 1
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        total_training_steps = self.train_steps_per_epoch * self.config.trainer.total_epochs
 
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps
@@ -432,6 +435,145 @@ class RayPPOTrainer(object):
         with open_dict(self.config):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
+
+    def _set_random_seed(self, seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    def _get_rng_state(self):
+        return {
+            'python': random.getstate(),
+            'numpy': np.random.get_state(),
+            'torch': torch.get_rng_state(),
+            'torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
+
+    def _set_rng_state(self, rng_state):
+        random.setstate(rng_state['python'])
+        np.random.set_state(rng_state['numpy'])
+        torch.set_rng_state(rng_state['torch'])
+        if torch.cuda.is_available() and rng_state.get('torch_cuda') is not None:
+            torch.cuda.set_rng_state_all(rng_state['torch_cuda'])
+
+    def _get_epoch_indices(self, epoch: int):
+        dataset_size = len(self.train_dataset)
+        if not self.config.data.shuffle_train_dataloader:
+            return list(range(dataset_size))
+
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + epoch)
+        return torch.randperm(dataset_size, generator=generator).tolist()
+
+    def _get_train_dataloader_for_epoch(self, epoch: int):
+        train_indices = self._get_epoch_indices(epoch)
+        train_subset = self._subset_cls(self.train_dataset, train_indices)
+        from torch.utils.data import DataLoader
+        return DataLoader(dataset=train_subset,
+                          batch_size=self.config.data.train_batch_size,
+                          shuffle=False,
+                          drop_last=True,
+                          collate_fn=self._train_collate_fn)
+
+    def _get_trainer_checkpoint_dir(self, global_step: int):
+        return os.path.join(self.config.trainer.default_local_dir, 'trainer', f'global_step_{global_step}')
+
+    def _should_use_critic(self):
+        return self.config.algorithm.adv_estimator == 'gae'
+
+    def _discover_latest_checkpoint_dir(self, trainer_root=None):
+        if trainer_root is None:
+            trainer_root = os.path.join(self.config.trainer.default_local_dir, 'trainer')
+        if not os.path.isdir(trainer_root):
+            return None
+
+        pattern = re.compile(r'^global_step_(\d+)$')
+        latest_step = -1
+        latest_dir = None
+        for entry in os.listdir(trainer_root):
+            match = pattern.match(entry)
+            if match is None:
+                continue
+            step = int(match.group(1))
+            if step > latest_step:
+                latest_step = step
+                latest_dir = os.path.join(trainer_root, entry)
+        return latest_dir
+
+    def _resolve_resume_dir(self):
+        resume_mode = str(self.config.trainer.get('resume_mode', 'none')).lower()
+        resume_path = self.config.trainer.get('resume_path', None)
+
+        if resume_mode in {'none', 'false', 'disabled'} and resume_path is None:
+            return None
+
+        if resume_path:
+            if os.path.isdir(os.path.join(resume_path, 'trainer')):
+                return self._discover_latest_checkpoint_dir(os.path.join(resume_path, 'trainer'))
+            if os.path.basename(resume_path) == 'trainer':
+                return self._discover_latest_checkpoint_dir(resume_path)
+            return resume_path
+
+        if resume_mode == 'latest':
+            return self._discover_latest_checkpoint_dir()
+
+        return None
+
+    def _load_resume_state(self):
+        resume_dir = self._resolve_resume_dir()
+        if resume_dir is None:
+            return None
+
+        trainer_state_path = os.path.join(resume_dir, TRAINER_STATE_FILENAME)
+        if not os.path.exists(trainer_state_path):
+            raise FileNotFoundError(f'Cannot find trainer state file: {trainer_state_path}')
+
+        resume_state = torch.load(trainer_state_path, map_location='cpu')
+        checkpoint_name = os.path.basename(resume_dir)
+        checkpoint_root = os.path.dirname(os.path.dirname(resume_dir))
+        actor_path = os.path.join(checkpoint_root, 'actor', checkpoint_name)
+        critic_path = os.path.join(checkpoint_root, 'critic', checkpoint_name)
+        if not os.path.isdir(actor_path):
+            raise FileNotFoundError(f'Cannot find actor checkpoint directory: {actor_path}')
+        if self._should_use_critic() and not os.path.isdir(critic_path):
+            raise FileNotFoundError(f'Cannot find critic checkpoint directory: {critic_path}')
+
+        self.resume_dir = resume_dir
+        self.resume_paths = {
+            'actor': actor_path,
+            'critic': critic_path if self._should_use_critic() else None,
+        }
+        return resume_state
+
+    def _apply_resume_paths_to_config(self):
+        self.resume_state = self._load_resume_state()
+        if self.resume_state is None:
+            return
+
+        OmegaConf.set_struct(self.config, False)
+        with open_dict(self.config):
+            self.config.actor_rollout_ref.actor.path = self.resume_paths['actor']
+            if self._should_use_critic():
+                self.config.critic.model.path = self.resume_paths['critic']
+                self.config.critic.model.tokenizer_path = self.resume_paths['critic']
+
+    def _save_trainer_state(self, checkpoint_dir, state):
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        torch.save(state, os.path.join(checkpoint_dir, TRAINER_STATE_FILENAME))
+
+    def _build_trainer_state(self, next_global_step: int, next_epoch: int, next_batch: int):
+        kl_ctrl_state = {'value': getattr(self.kl_ctrl, 'value', None)}
+        return {
+            'global_steps': next_global_step,
+            'epoch': next_epoch,
+            'batch_in_epoch': next_batch,
+            'total_training_steps': self.total_training_steps,
+            'seed': self.seed,
+            'rng_state': self._get_rng_state(),
+            'kl_ctrl_state': kl_ctrl_state,
+        }
 
     def _validate(self):
         """
@@ -549,6 +691,7 @@ class RayPPOTrainer(object):
 
     def init_workers(self):
         """Init resource pool and worker group"""
+        self._apply_resume_paths_to_config()
         self.resource_pool_manager.create_resource_pool()
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
@@ -620,7 +763,12 @@ class RayPPOTrainer(object):
         self.actor_rollout_wg = all_wg['actor_rollout']
         self.actor_rollout_wg.init_model()
 
-    def _save_checkpoint(self):
+        if self.resume_state is not None:
+            self.actor_rollout_wg.load_checkpoint(self.resume_paths['actor'])
+            if self.use_critic:
+                self.critic_wg.load_checkpoint(self.resume_paths['critic'])
+
+    def _save_checkpoint(self, epoch: int, batch_idx: int, steps_in_epoch: int):
         actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
                                         f'global_step_{self.global_steps}')
         actor_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
@@ -633,6 +781,18 @@ class RayPPOTrainer(object):
             critic_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
                 self.config.trainer.default_hdfs_dir, 'critic')
             self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
+
+        next_epoch = epoch
+        next_batch = batch_idx + 1
+        if next_batch >= steps_in_epoch:
+            next_epoch = epoch + 1
+            next_batch = 0
+
+        trainer_state = self._build_trainer_state(next_global_step=self.global_steps + 1,
+                                                  next_epoch=next_epoch,
+                                                  next_batch=next_batch)
+        trainer_checkpoint_dir = self._get_trainer_checkpoint_dir(self.global_steps)
+        self._save_trainer_state(trainer_checkpoint_dir, trainer_state)
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix='global_seqlen'):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
@@ -660,9 +820,20 @@ class RayPPOTrainer(object):
 
         logger = self.logger
         self.global_steps = 0
+        start_epoch = 0
+        start_batch = 0
+
+        if self.resume_state is not None:
+            self.global_steps = int(self.resume_state['global_steps'])
+            start_epoch = int(self.resume_state['epoch'])
+            start_batch = int(self.resume_state['batch_in_epoch'])
+            self._set_rng_state(self.resume_state['rng_state'])
+            if self.resume_state.get('kl_ctrl_state', {}).get('value') is not None:
+                self.kl_ctrl.value = self.resume_state['kl_ctrl_state']['value']
+
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
+        if self.resume_state is None and self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
             val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
             logger.log(data=val_metrics, step=self.global_steps)
@@ -670,7 +841,11 @@ class RayPPOTrainer(object):
                 return
 
         # we start from step 1
-        self.global_steps += 1
+        if self.resume_state is None:
+            self.global_steps += 1
+        elif self.global_steps > self.total_training_steps:
+            print(f'Resume step {self.global_steps} exceeds total training steps {self.total_training_steps}, skip training.')
+            return
 
         # Agent config preparation
         gen_config = GenerationConfig(
@@ -692,8 +867,13 @@ class RayPPOTrainer(object):
         )
 
         # start training loop
-        for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
+        for epoch in range(start_epoch, self.config.trainer.total_epochs):
+            train_dataloader = self._get_train_dataloader_for_epoch(epoch)
+            steps_in_epoch = len(train_dataloader)
+
+            for batch_idx, batch_dict in enumerate(train_dataloader):
+                if epoch == start_epoch and batch_idx < start_batch:
+                    continue
                 print(f'epoch {epoch}, step {self.global_steps}')
                 metrics = {}
                 timing_raw = {}
@@ -831,7 +1011,7 @@ class RayPPOTrainer(object):
                     if self.config.trainer.save_freq > 0 and \
                             self.global_steps % self.config.trainer.save_freq == 0:
                         with _timer('save_checkpoint', timing_raw):
-                            self._save_checkpoint()
+                            self._save_checkpoint(epoch=epoch, batch_idx=batch_idx, steps_in_epoch=steps_in_epoch)
 
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
@@ -849,6 +1029,7 @@ class RayPPOTrainer(object):
                         val_metrics = self._validate()
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
+                    self._save_checkpoint(epoch=epoch, batch_idx=batch_idx, steps_in_epoch=steps_in_epoch)
                     return
     
     def _create_loss_mask(self, batch, metrics):

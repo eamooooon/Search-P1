@@ -24,6 +24,7 @@ actor_rollout_ref:
     enable_gradient_checkpointing: False
     use_remove_padding: False
   actor:
+    path: null
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
@@ -54,6 +55,7 @@ actor_rollout_ref:
       optimizer_offload: False
       fsdp_size: -1
   ref:
+    path: null
     fsdp_config:
       param_offload: False
       wrap_policy:
@@ -168,11 +170,14 @@ trainer:
   project_name: verl_examples
   experiment_name: gsm8k
   logger: [ 'console', 'wandb' ]
+  seed: 1
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: -1
   test_freq: -1
   critic_warmup: 0
+  resume_mode: none
+  resume_path: null
   default_hdfs_dir: ~/experiments/gsm8k/ppo/${trainer.experiment_name}
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
 

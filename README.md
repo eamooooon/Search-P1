@@ -196,7 +196,7 @@ For example:
 **Index your corpora (optional).**
 If you would like to use a local retriever as the search engine, you can index your own corpus by:
 ```
-bash search_r1/search/build_index.sh
+bash search_p1/search/build_index.sh
 ```
 You can change ```retriever_name``` and ```retriever_model``` to your interested off-the-shelf retriever.
 
@@ -208,7 +208,7 @@ The main philosophy is to launch a local or remote search engine server separate
 
 The LLM can call the search engine by calling the search API (e.g., "http://127.0.0.1:8000/retrieve").
 
-You can refer to ```search_r1/search/retriever_server.py``` for an example of launching a local retriever server.
+You can refer to ```search_p1/search/retriever_server.py``` for an example of launching a local retriever server.
 
 ## Features
 - Support local sparse retrievers (e.g., BM25). ✔️
