@@ -342,7 +342,7 @@ class ActorRolloutRefWorker(Worker):
             else:
                 optim_config = None
                 fsdp_config = OmegaConf.create()
-            actor_model_path = self.config.actor.get('path', self.config.model.path)
+            actor_model_path = self.config.actor.get('path') or self.config.model.path
             self.actor_module_fsdp, self.actor_optimizer, self.actor_lr_scheduler, self.actor_model_config = self._build_model_optimizer(
                 model_path=actor_model_path,
                 fsdp_config=fsdp_config,
@@ -375,7 +375,7 @@ class ActorRolloutRefWorker(Worker):
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
         if self._is_ref:
-            ref_model_path = self.config.ref.get('path', self.config.model.path)
+            ref_model_path = self.config.ref.get('path') or self.config.model.path
             self.ref_module_fsdp = self._build_model_optimizer(model_path=ref_model_path,
                                                                fsdp_config=self.config.ref.fsdp_config,
                                                                optim_config=None,
