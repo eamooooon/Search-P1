@@ -7,7 +7,7 @@ WAND_PROJECT="Search-R1"
 
 # export BASE_MODEL='Qwen/Qwen2.5-3B'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-3b-em
-export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
+export BASE_MODEL='models/Qwen2.5-3B-Instruct'
 export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-3b-it-em-v0.2-fix
 # export BASE_MODEL='Qwen/Qwen2.5-7B'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-7b-em
