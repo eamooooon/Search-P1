@@ -18,10 +18,12 @@ curr_search_template = '\n\n{output_text}<information>{search_results}</informat
 
 # Prepare the message
 prompt = f"""Answer the given question. \
+Before any search, you must first output a complete plan inside <plan> and </plan> that explains how many search steps you will take and what each step will search for. \
+The <plan> should be written once at the beginning and should cover the full search strategy before execution starts. \
 You must conduct reasoning inside <think> and </think> first every time you get new information. \
 After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. \
 You can search as many times as your want. \
-If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: {question}\n"""
+If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <plan>\nStep 1: search for the relevant entity\nStep 2: search for the specific fact needed\n</plan>\n<think>...</think>\n<answer> Beijing </answer>. Question: {question}\n"""
 
 # Initialize the tokenizer and model
 tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)

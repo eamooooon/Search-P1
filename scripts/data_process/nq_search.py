@@ -30,10 +30,12 @@ def make_prefix(dp, template_type):
     if template_type == 'base':
         """This works for any base model"""
         prefix = f"""Answer the given question. \
+Before any search, you must first output a complete plan inside <plan> and </plan> that explains how many search steps you will take and what each step will search for. \
+The <plan> should be written once at the beginning and should cover the full search strategy before execution starts. \
 You must conduct reasoning inside <think> and </think> first every time you get new information. \
 After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. \
 You can search as many times as your want. \
-If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: {question}\n"""
+If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <plan>\nStep 1: Search the relevant entity.\nStep 2: Search the specific fact needed to answer the question.\n</plan>\n<think>I need external evidence for the question.</think>\n<search>relevant entity specific fact</search>\n<information>Doc 1(Title: Example) The evidence needed to answer the question.</information>\n<think>The evidence is sufficient, so I can answer.</think>\n<answer> Beijing </answer>. Question: {question}\n"""
     else:
         raise NotImplementedError
     return prefix

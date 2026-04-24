@@ -10,6 +10,10 @@
 **/models
 **/swanlog
 **cache
+**AGENTS.md
+**/.agents
+**/.codex
+**/.trellis
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

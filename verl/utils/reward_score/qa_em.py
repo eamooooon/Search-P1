@@ -73,12 +73,13 @@ def extract_solution(solution_str):
     answer_pattern = r'<answer>(.*?)</answer>'
     match = re.finditer(answer_pattern, solution_str, re.DOTALL)
     matches = list(match)
-    
-    # If there are 0 or exactly 1 matches, return None
+
+    # The decoded sequence contains both prompt and response, and the prompt
+    # includes an <answer> example. Require at least two <answer> blocks so
+    # that we extract the model's actual final answer instead of the example.
     if len(matches) <= 1:
         return None
-    
-    # If there are 2 or more matches, return the last one
+
     return matches[-1].group(1).strip()
 
 
