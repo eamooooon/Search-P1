@@ -33,7 +33,13 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, structure_format_score=0., final_format_score=0., retrieval_score=0., format_score=0.) -> None:
+    def __init__(self,
+                 tokenizer,
+                 num_examine,
+                 structure_format_score=0.,
+                 final_format_score=0.,
+                 retrieval_score=0.,
+                 format_score=0.) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score

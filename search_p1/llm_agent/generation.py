@@ -227,6 +227,7 @@ class LLMGenerationManager:
         turns_stats = torch.ones(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_action_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_search_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
+        planner_seen = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.bool)
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
 
@@ -251,9 +252,10 @@ class LLMGenerationManager:
 
             # Execute in environment and process observations
             next_obs, dones, valid_action, is_search = self.execute_predictions(
-                responses_str, self.tokenizer.pad_token, active_mask
+                responses_str, self.tokenizer.pad_token, active_mask, planner_seen=planner_seen
             )
             
+            planner_seen = planner_seen | self._detect_plan_blocks(responses_str, active_mask)
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_mask = active_mask * curr_active_mask
             active_num_list.append(active_mask.sum().item())
@@ -294,9 +296,10 @@ class LLMGenerationManager:
 
             # # Execute in environment and process observations
             _, dones, valid_action, is_search = self.execute_predictions(
-                responses_str, self.tokenizer.pad_token, active_mask, do_search=False
+                responses_str, self.tokenizer.pad_token, active_mask, do_search=False, planner_seen=planner_seen
             )
 
+            planner_seen = planner_seen | self._detect_plan_blocks(responses_str, active_mask)
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_mask = active_mask * curr_active_mask
             active_num_list.append(active_mask.sum().item())
@@ -350,7 +353,35 @@ class LLMGenerationManager:
         
         return final_output
 
-    def execute_predictions(self, predictions: List[str], pad_token: str, active_mask=None, do_search=True) -> List[str]:
+    def _detect_plan_blocks(self, predictions: List[str], active_mask=None) -> torch.Tensor:
+        flags = []
+        for prediction, active in zip(predictions, active_mask):
+            flags.append(bool(active) and self._has_valid_plan(prediction))
+        return torch.tensor(flags, dtype=torch.bool)
+
+    def _has_valid_plan(self, prediction: str) -> bool:
+        plan_match = re.search(r"<plan>(.*?)</plan>", prediction, re.DOTALL)
+        if not plan_match:
+            return False
+        steps = re.findall(
+            r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)",
+            plan_match.group(1),
+            re.DOTALL | re.IGNORECASE,
+        )
+        return any(step.strip() for step in steps)
+
+    def _is_valid_search_query(self, query: str) -> bool:
+        if not query or not query.strip():
+            return False
+        if re.search(r"</?[^>]+>", query):
+            return False
+        if re.search(r"https?://|www\.", query, re.IGNORECASE):
+            return False
+        if len(query.split()) > 32:
+            return False
+        return True
+
+    def execute_predictions(self, predictions: List[str], pad_token: str, active_mask=None, do_search=True, planner_seen=None) -> List[str]:
         """
         Execute predictions across multiple environments.
         NOTE: the function is the actual `step` function in the environment
@@ -364,7 +395,7 @@ class LLMGenerationManager:
         Returns:
             List of observation strings
         """
-        cur_actions, contents = self.postprocess_predictions(predictions)
+        cur_actions, contents = self.postprocess_predictions(predictions, planner_seen=planner_seen, active_mask=active_mask)
         next_obs, dones, valid_action, is_search = [], [], [], []
         
         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
@@ -394,8 +425,9 @@ class LLMGenerationManager:
                     is_search.append(1)
                 else:
                     next_obs.append(f'\nMy previous action is invalid. \
-If I want to search, I should put the query between <search> and </search>. \
-If I want to give the final answer, I should put the answer between <answer> and </answer>. Let me try again.\n')
+First provide a complete plan with numbered Search steps, then reason before taking an action. \
+For a search action, output only one clean natural-language query inside the search tag pair. \
+For the final answer, output only the concise answer inside the answer tag pair. Let me try again.\n')
                     dones.append(0)
                     valid_action.append(0)
                     is_search.append(0)
@@ -404,7 +436,7 @@ If I want to give the final answer, I should put the answer between <answer> and
             
         return next_obs, dones, valid_action, is_search
 
-    def postprocess_predictions(self, predictions: List[Any]) -> Tuple[List[int], List[bool]]:
+    def postprocess_predictions(self, predictions: List[Any], planner_seen=None, active_mask=None) -> Tuple[List[int], List[bool]]:
         """
         Process (text-based) predictions from llm into actions and validity flags.
         
@@ -417,13 +449,25 @@ If I want to give the final answer, I should put the answer between <answer> and
         actions = []
         contents = []
                 
-        for prediction in predictions:
+        if planner_seen is None:
+            planner_seen = [False] * len(predictions)
+        if active_mask is None:
+            active_mask = [True] * len(predictions)
+
+        for prediction, has_planned, active in zip(predictions, planner_seen, active_mask):
             if isinstance(prediction, str): # for llm output
                 pattern = r'<(search|answer)>(.*?)</\1>'
                 match = re.search(pattern, prediction, re.DOTALL)
                 if match:
                     content = match.group(2).strip()  # Return only the content inside the tags
                     action = match.group(1)
+                    has_plan = bool(has_planned) or self._has_valid_plan(prediction)
+                    if active and not has_plan:
+                        content = ''
+                        action = None
+                    elif action == 'search' and not self._is_valid_search_query(content):
+                        content = ''
+                        action = None
                 else:
                     content = ''
                     action = None

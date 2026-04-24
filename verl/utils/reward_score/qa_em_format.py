@@ -46,52 +46,87 @@ def em_check(prediction, golden_answers):
     return score
 
 
-def is_valid_sequence(text):
-    # Find the position of "<|im_start|>assistant" with potential whitespace
+def _extract_assistant_content(text):
     assistant_pattern = r"<\|im_start\|>assistant\s*"
     assistant_match = re.search(assistant_pattern, text)
-    
-    if not assistant_match:
-        return False, "Missing assistant marker"
-    
-    # Extract the content after the assistant marker
-    start_pos = assistant_match.end()
-    content = text[start_pos:]
-    
-    # Check for balanced tags
-    tags_to_check = ["think", "search", "information", "answer"]
+    if assistant_match:
+        return text[assistant_match.end():]
+    return text
+
+
+def extract_plan_steps(text):
+    content = _extract_assistant_content(text)
+    match = re.search(r"<plan>(.*?)</plan>", content, re.DOTALL)
+    if not match:
+        return []
+    plan_text = match.group(1)
+    step_pattern = r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)"
+    steps = re.findall(step_pattern, plan_text, re.DOTALL | re.IGNORECASE)
+    return [step.strip() for step in steps if step.strip()]
+
+
+def extract_search_queries(text):
+    content = _extract_assistant_content(text)
+    matches = re.findall(r"<search>(.*?)</search>", content, re.DOTALL)
+    return [match.strip() for match in matches]
+
+
+def is_valid_search_query(query):
+    if not query or not query.strip():
+        return False
+    if re.search(r"</?[^>]+>", query):
+        return False
+    if re.search(r"https?://|www\.", query, re.IGNORECASE):
+        return False
+    if len(query.split()) > 32:
+        return False
+    return True
+
+
+def is_valid_sequence(text):
+    content = _extract_assistant_content(text)
+
+    tags_to_check = ["plan", "think", "search", "information", "answer"]
     for tag in tags_to_check:
         opening_count = len(re.findall(f"<{tag}>", content))
         closing_count = len(re.findall(f"</{tag}>", content))
         if opening_count != closing_count:
             return False, f"Mismatch in {tag} tags: {opening_count} opening vs {closing_count} closing tags"
-    
-    # Now check for proper sequence pattern and no extraneous content
-    
-    # 1. First split the content by any tags we recognize
-    split_pattern = r"(</?(?:think|search|information|answer)>)"
+
+    plan_count = len(re.findall(r"<plan>", content))
+    if plan_count > 1:
+        return False, "Multiple <plan> blocks are not allowed"
+    if plan_count != 1:
+        return False, "Missing required <plan> block"
+    if not extract_plan_steps(content):
+        return False, "Missing valid plan steps"
+
+    split_pattern = r"(</?(?:plan|think|search|information|answer)>)"
     parts = re.split(split_pattern, content)
-    
-    # 2. Keep track of the current position in the expected sequence
-    state = "start"  # start -> think -> search -> information -> think -> ... -> answer -> end
-    
-    # 3. Check each part
-    for i, part in enumerate(parts):
-        # Skip empty parts
+
+    state = "start"
+    current_search_query = ""
+
+    for part in parts:
         if not part.strip():
             continue
-            
-        # Check if this is a tag
-        if re.match(r"</?(?:think|search|information|answer)>", part):
-            # This is a tag, check if it's valid in the current state
-            if part == "<think>" and state in ["start", "information"]:
+
+        if re.match(r"</?(?:plan|think|search|information|answer)>", part):
+            if part == "<plan>" and state == "start":
+                state = "in_plan"
+            elif part == "</plan>" and state == "in_plan":
+                state = "after_plan"
+            elif part == "<think>" and state in ["after_plan", "information"]:
                 state = "in_think"
             elif part == "</think>" and state == "in_think":
                 state = "after_think"
             elif part == "<search>" and state == "after_think":
                 state = "in_search"
+                current_search_query = ""
             elif part == "</search>" and state == "in_search":
                 state = "after_search"
+                if not is_valid_search_query(current_search_query):
+                    return False, "Invalid search query"
             elif part == "<information>" and state == "after_search":
                 state = "in_information"
             elif part == "</information>" and state == "in_information":
@@ -103,21 +138,19 @@ def is_valid_sequence(text):
             else:
                 return False, f"Unexpected tag {part} in state {state}"
         else:
-            # This is content, check if it's valid in the current state
-            if state in ["in_think", "in_search", "in_information", "in_answer"]:
-                # Content is allowed inside tags
+            if state in ["in_plan", "in_think", "in_search", "in_information", "in_answer"]:
+                if state == "in_search":
+                    current_search_query += part
                 pass
-            elif state in ["start", "after_think", "after_search", "information"]:
-                # Only whitespace is allowed between tags
+            elif state in ["start", "after_plan", "after_think", "after_search", "information", "end"]:
                 if part.strip():
                     return False, f"Unexpected content '{part.strip()}' between tags (state: {state})"
             else:
                 return False, f"Unexpected content in state {state}"
-    
-    # Check final state
+
     if state != "end":
         return False, f"Incomplete sequence, ended in state {state}"
-        
+
     return True, "Valid sequence format"
 
 
@@ -160,7 +193,14 @@ def is_retrieval_correct(text: str, golden_answers: list[str]) -> list[str]:
     return False
 
 
-def compute_score_em(solution_str, ground_truth, method='strict', structure_format_score=0, final_format_score=0, retrieval_score=0, format_score=0, score=1.):
+def compute_score_em(solution_str,
+                     ground_truth,
+                     method='strict',
+                     structure_format_score=0,
+                     final_format_score=0,
+                     retrieval_score=0,
+                     format_score=0,
+                     score=1.):
     """The scoring function for exact match (EM).
 
     Args:
