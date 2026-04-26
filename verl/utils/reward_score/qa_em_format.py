@@ -67,7 +67,7 @@ def extract_plan_steps(text):
 
 def extract_search_queries(text):
     content = _extract_assistant_content(text)
-    matches = re.findall(r"<search>(.*?)</search>", content, re.DOTALL)
+    matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
     return [match.strip() for match in matches]
 
 
@@ -86,7 +86,7 @@ def is_valid_search_query(query):
 def is_valid_sequence(text):
     content = _extract_assistant_content(text)
 
-    tags_to_check = ["plan", "think", "search", "information", "answer"]
+    tags_to_check = ["plan", "reasoning", "tool_call", "tool_response", "answer"]
     for tag in tags_to_check:
         opening_count = len(re.findall(f"<{tag}>", content))
         closing_count = len(re.findall(f"</{tag}>", content))
@@ -101,48 +101,48 @@ def is_valid_sequence(text):
     if not extract_plan_steps(content):
         return False, "Missing valid plan steps"
 
-    split_pattern = r"(</?(?:plan|think|search|information|answer)>)"
+    split_pattern = r"(</?(?:plan|reasoning|tool_call|tool_response|answer)>)"
     parts = re.split(split_pattern, content)
 
     state = "start"
-    current_search_query = ""
+    current_tool_call = ""
 
     for part in parts:
         if not part.strip():
             continue
 
-        if re.match(r"</?(?:plan|think|search|information|answer)>", part):
+        if re.match(r"</?(?:plan|reasoning|tool_call|tool_response|answer)>", part):
             if part == "<plan>" and state == "start":
                 state = "in_plan"
             elif part == "</plan>" and state == "in_plan":
                 state = "after_plan"
-            elif part == "<think>" and state in ["after_plan", "information"]:
-                state = "in_think"
-            elif part == "</think>" and state == "in_think":
-                state = "after_think"
-            elif part == "<search>" and state == "after_think":
-                state = "in_search"
-                current_search_query = ""
-            elif part == "</search>" and state == "in_search":
-                state = "after_search"
-                if not is_valid_search_query(current_search_query):
-                    return False, "Invalid search query"
-            elif part == "<information>" and state == "after_search":
-                state = "in_information"
-            elif part == "</information>" and state == "in_information":
-                state = "information"
-            elif part == "<answer>" and state == "after_think":
+            elif part == "<reasoning>" and state in ["after_plan", "tool_response"]:
+                state = "in_reasoning"
+            elif part == "</reasoning>" and state == "in_reasoning":
+                state = "after_reasoning"
+            elif part == "<tool_call>" and state == "after_reasoning":
+                state = "in_tool_call"
+                current_tool_call = ""
+            elif part == "</tool_call>" and state == "in_tool_call":
+                state = "after_tool_call"
+                if not is_valid_search_query(current_tool_call):
+                    return False, "Invalid tool call"
+            elif part == "<tool_response>" and state == "after_tool_call":
+                state = "in_tool_response"
+            elif part == "</tool_response>" and state == "in_tool_response":
+                state = "tool_response"
+            elif part == "<answer>" and state == "after_reasoning":
                 state = "in_answer"
             elif part == "</answer>" and state == "in_answer":
                 state = "end"
             else:
                 return False, f"Unexpected tag {part} in state {state}"
         else:
-            if state in ["in_plan", "in_think", "in_search", "in_information", "in_answer"]:
-                if state == "in_search":
-                    current_search_query += part
+            if state in ["in_plan", "in_reasoning", "in_tool_call", "in_tool_response", "in_answer"]:
+                if state == "in_tool_call":
+                    current_tool_call += part
                 pass
-            elif state in ["start", "after_plan", "after_think", "after_search", "information", "end"]:
+            elif state in ["start", "after_plan", "after_reasoning", "after_tool_call", "tool_response", "end"]:
                 if part.strip():
                     return False, f"Unexpected content '{part.strip()}' between tags (state: {state})"
             else:
@@ -168,24 +168,31 @@ def extract_solution(solution_str):
     )
 
     answer_pattern = r'<answer>(.*?)</answer>'
-    match = re.finditer(answer_pattern, solution_str, re.DOTALL)
+    content = _extract_assistant_content(solution_str)
+    match = re.finditer(answer_pattern, content, re.DOTALL)
     matches = list(match)
-    
-    if len(matches) == 0:
+
+    if not matches:
+        return None
+
+    if content == solution_str and len(matches) <= 1:
         return None
     
     # Use the final answer tag when a trajectory contains multiple turns.
     return matches[-1].group(1).strip()
 
 
-def extract_information_blocks(text: str) -> list[str]:
-    pattern = r"<information>(.*?)</information>"
-    matches = re.findall(pattern, text, re.DOTALL)
+def extract_tool_response_blocks(text: str) -> list[str]:
+    content = _extract_assistant_content(text)
+    pattern = r"<tool_response>(.*?)</tool_response>"
+    matches = re.findall(pattern, content, re.DOTALL)
     return [match.strip() for match in matches]
 
 
-def is_retrieval_correct(text: str, golden_answers: list[str]) -> list[str]:
-    seqs = extract_information_blocks(text)
+def is_retrieval_correct(text: str, golden_answers: list[str]) -> bool:
+    if isinstance(golden_answers, str):
+        golden_answers = [golden_answers]
+    seqs = extract_tool_response_blocks(text)
     for seq in seqs:
         for golden_answer in golden_answers:
             if normalize_answer(golden_answer) in normalize_answer(seq):
