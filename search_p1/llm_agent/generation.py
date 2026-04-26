@@ -52,18 +52,13 @@ class LLMGenerationManager:
         )['input_ids']
 
     def _postprocess_responses(self, responses: torch.Tensor) -> torch.Tensor:
-        """Process responses to stop at search operation or answer operation."""
+        """Process responses to stop at tool-call operation or answer operation."""
         responses_str = self.tokenizer.batch_decode(
             responses, 
             skip_special_tokens=True
         )
 
-        responses_str = [resp.split('</search>')[0] + '</search>'
-                 if '</search>' in resp 
-                 else resp.split('</answer>')[0] + '</answer>'
-                 if '</answer>' in resp 
-                 else resp
-                 for resp in responses_str]
+        responses_str = [self._truncate_at_first_action(resp) for resp in responses_str]
 
         if self.config.no_think_rl:
             raise ValueError('stop')
@@ -73,6 +68,18 @@ class LLMGenerationManager:
             print("RESPONSES:", responses_str)
         responses = self._batch_tokenize(responses_str)
         return responses, responses_str
+
+    def _truncate_at_first_action(self, response: str) -> str:
+        action_endings = ["</tool_call>", "</answer>"]
+        candidates = [
+            (response.find(ending), ending)
+            for ending in action_endings
+            if response.find(ending) != -1
+        ]
+        if not candidates:
+            return response
+        end_idx, ending = min(candidates, key=lambda item: item[0])
+        return response[:end_idx] + ending
 
     def _process_next_obs(self, next_obs: List[str]) -> torch.Tensor:
         """Process next observations from environment."""
@@ -124,13 +131,13 @@ class LLMGenerationManager:
                 info: torch.Tensor = None,
                 pad_to_left: bool = True
             ) -> torch.Tensor:
-        """Concatenate tensors and handle padding. Additionally, create a mask (info_mask) to cover the information block if it exists."""
+        """Concatenate tensors and handle padding. Additionally, create a mask (info_mask) to cover the tool response block if it exists."""
         pad_id = self.tokenizer.pad_token_id
         tensors = [prompt, response]
         tensors_with_mask = [prompt_with_mask, response]
         if info is not None:
             tensors.append(info)
-            info_mask = torch.full(info.size(), pad_id, dtype=info.dtype, device=info.device) # information mask
+            info_mask = torch.full(info.size(), pad_id, dtype=info.dtype, device=info.device) # tool response mask
             tensors_with_mask.append(info_mask)
         
         concatenated = torch.cat(tensors, dim=1)
@@ -360,15 +367,30 @@ class LLMGenerationManager:
         return torch.tensor(flags, dtype=torch.bool)
 
     def _has_valid_plan(self, prediction: str) -> bool:
-        plan_match = re.search(r"<plan>(.*?)</plan>", prediction, re.DOTALL)
-        if not plan_match:
+        plan_matches = list(re.finditer(r"<plan>(.*?)</plan>", prediction, re.DOTALL))
+        if len(plan_matches) != 1:
             return False
         steps = re.findall(
             r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)",
-            plan_match.group(1),
+            plan_matches[0].group(1),
             re.DOTALL | re.IGNORECASE,
         )
         return any(step.strip() for step in steps)
+
+    def _action_has_required_context(self, prediction: str, match: re.Match, has_planned: bool) -> bool:
+        if has_planned:
+            if re.search(r"</?plan>", prediction):
+                return False
+            pre_action_text = prediction[:match.start()]
+        else:
+            plan_matches = list(re.finditer(r"<plan>(.*?)</plan>", prediction, re.DOTALL))
+            if len(plan_matches) != 1:
+                return False
+            if match.start() < plan_matches[0].end():
+                return False
+            pre_action_text = prediction[plan_matches[0].end():match.start()]
+
+        return bool(re.search(r"<reasoning>.*?</reasoning>\s*$", pre_action_text.strip(), re.DOTALL))
 
     def _is_valid_search_query(self, query: str) -> bool:
         if not query or not query.strip():
@@ -419,14 +441,14 @@ class LLMGenerationManager:
                     valid_action.append(1)
                     is_search.append(0)
                 elif action == 'search':
-                    next_obs.append(f'\n\n<information>{search_results.pop(0).strip()}</information>\n\n')
+                    next_obs.append(f'\n\n<tool_response>{search_results.pop(0).strip()}</tool_response>\n\n')
                     dones.append(0)
                     valid_action.append(1)
                     is_search.append(1)
                 else:
                     next_obs.append(f'\nMy previous action is invalid. \
 First provide a complete plan with numbered Search steps, then reason before taking an action. \
-For a search action, output only one clean natural-language query inside the search tag pair. \
+For a search action, output only one clean natural-language query inside the tool_call tag pair. \
 For the final answer, output only the concise answer inside the answer tag pair. Let me try again.\n')
                     dones.append(0)
                     valid_action.append(0)
@@ -456,13 +478,17 @@ For the final answer, output only the concise answer inside the answer tag pair.
 
         for prediction, has_planned, active in zip(predictions, planner_seen, active_mask):
             if isinstance(prediction, str): # for llm output
-                pattern = r'<(search|answer)>(.*?)</\1>'
+                pattern = r'<(tool_call|answer)>(.*?)</\1>'
                 match = re.search(pattern, prediction, re.DOTALL)
                 if match:
                     content = match.group(2).strip()  # Return only the content inside the tags
-                    action = match.group(1)
+                    action_tag = match.group(1)
+                    action = 'search' if action_tag == 'tool_call' else action_tag
                     has_plan = bool(has_planned) or self._has_valid_plan(prediction)
                     if active and not has_plan:
+                        content = ''
+                        action = None
+                    elif active and not self._action_has_required_context(prediction, match, bool(has_planned)):
                         content = ''
                         action = None
                     elif action == 'search' and not self._is_valid_search_query(content):
