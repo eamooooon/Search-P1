@@ -21,6 +21,9 @@ from verl.utils.reward_score import qa_em, qa_em_format
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 def _select_rm_score_fn(data_source):
     if data_source in ['nq', 'triviaqa', 'popqa', 'web_questions', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle', 'strategyqa']:
@@ -39,13 +42,18 @@ class RewardManager():
                  structure_format_score=0.,
                  final_format_score=0.,
                  retrieval_score=0.,
-                 format_score=0.) -> None:
+                 format_score=0.,
+                 path_reward_weight=0.,
+                 path_match_strategy="lexical") -> None:
+        qa_em_format.validate_path_match_strategy(path_match_strategy)
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
         self.structure_format_score = structure_format_score
         self.final_format_score = final_format_score
         self.retrieval_score = retrieval_score
+        self.path_reward_weight = path_reward_weight
+        self.path_match_strategy = path_match_strategy
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -56,7 +64,12 @@ class RewardManager():
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
 
-        # all_scores = []
+        reward_components = {
+            "base_score": [],
+            "self_consistency": [],
+            "path_bonus": [],
+            "final_score": [],
+        }
 
         already_print_data_sources = {}
 
@@ -84,23 +97,59 @@ class RewardManager():
             data_source = data_item.non_tensor_batch['data_source']
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, 
-                                     structure_format_score=self.structure_format_score, 
-                                     final_format_score=self.final_format_score, 
-                                     retrieval_score=self.retrieval_score,
-                                     format_score=self.format_score)
+            if compute_score_fn is qa_em_format.compute_score_em:
+                components = qa_em_format.compute_score_components(
+                    solution_str=sequences_str,
+                    ground_truth=ground_truth,
+                    structure_format_score=self.structure_format_score,
+                    final_format_score=self.final_format_score,
+                    retrieval_score=self.retrieval_score,
+                    format_score=self.format_score,
+                    path_reward_weight=self.path_reward_weight,
+                    path_match_strategy=self.path_match_strategy,
+                )
+                score = components["final_score"]
+            else:
+                score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth,
+                                         structure_format_score=self.structure_format_score,
+                                         final_format_score=self.final_format_score,
+                                         retrieval_score=self.retrieval_score,
+                                         format_score=self.format_score,
+                                         path_reward_weight=self.path_reward_weight,
+                                         path_match_strategy=self.path_match_strategy)
+                components = {
+                    "base_score": score,
+                    "self_consistency": 0.0,
+                    "path_bonus": 0.0,
+                    "final_score": score,
+                }
 
             reward_tensor[i, valid_response_length - 1] = score
-            # all_scores.append(score)
+            for key, value in components.items():
+                reward_components[key].append(float(value))
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
-                print(sequences_str)
+                logger.info("Decoded reward sample for %s:\n%s", data_source, sequences_str)
 
+        data.meta_info["reward_components"] = reward_components
         return reward_tensor
+
+
+def _reward_manager_kwargs(config):
+    path_reward_weight = getattr(config.reward_model, "path_reward_weight", 0.)
+    path_match_strategy = getattr(config.reward_model, "path_match_strategy", "lexical")
+    qa_em_format.validate_path_match_strategy(path_match_strategy)
+    return {
+        "structure_format_score": config.reward_model.structure_format_score,
+        "final_format_score": config.reward_model.final_format_score,
+        "retrieval_score": config.reward_model.retrieval_score,
+        "path_reward_weight": path_reward_weight,
+        "path_match_strategy": path_match_strategy,
+    }
 
 
 import ray
@@ -126,6 +175,7 @@ def main_task(config):
     from omegaconf import OmegaConf
     pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
     OmegaConf.resolve(config)
+    reward_config = _reward_manager_kwargs(config)
 
     # env_class = ENV_CLASS_MAPPING[config.env.name]
 
@@ -186,13 +236,10 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, 
-                              structure_format_score=config.reward_model.structure_format_score, 
-                              final_format_score=config.reward_model.final_format_score,
-                              retrieval_score=config.reward_model.retrieval_score)
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, **reward_config)
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, **reward_config)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,
