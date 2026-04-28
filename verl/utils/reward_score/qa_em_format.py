@@ -14,7 +14,48 @@
 
 import re
 import string
-import random
+import logging
+
+logger = logging.getLogger(__name__)
+
+_STEP_LINE_PATTERN = re.compile(
+    r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+_TAG_PATTERN = re.compile(r"</?[^>]+>")
+_URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
+_MATCH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "answer",
+    "by",
+    "find",
+    "for",
+    "in",
+    "needed",
+    "of",
+    "on",
+    "query",
+    "question",
+    "relevant",
+    "search",
+    "specific",
+    "the",
+    "to",
+}
+_SUPPORTED_PATH_MATCH_STRATEGIES = {"lexical"}
+
+
+def validate_path_match_strategy(match_strategy):
+    if match_strategy not in _SUPPORTED_PATH_MATCH_STRATEGIES:
+        supported = ", ".join(sorted(_SUPPORTED_PATH_MATCH_STRATEGIES))
+        raise ValueError(
+            f"Unsupported path_match_strategy '{match_strategy}'. "
+            f"Supported strategies: {supported}. "
+            "Embedding and offline LLM matching are not implemented."
+        )
+
 
 def normalize_answer(s):
     def remove_articles(text):
@@ -60,15 +101,96 @@ def extract_plan_steps(text):
     if not match:
         return []
     plan_text = match.group(1)
-    step_pattern = r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)"
-    steps = re.findall(step_pattern, plan_text, re.DOTALL | re.IGNORECASE)
+    steps = re.findall(_STEP_LINE_PATTERN, plan_text)
     return [step.strip() for step in steps if step.strip()]
 
 
-def extract_search_queries(text):
+def extract_tool_calls(text):
     content = _extract_assistant_content(text)
     matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
     return [match.strip() for match in matches]
+
+
+def extract_search_queries(text):
+    return extract_tool_calls(text)
+
+
+def count_actions(text):
+    return len(extract_tool_calls(text))
+
+
+def validate_planner_steps(steps):
+    return bool(steps) and all(step and not _TAG_PATTERN.search(step) for step in steps)
+
+
+def validate_actions(actions):
+    return bool(actions) and all(is_valid_search_query(action) for action in actions)
+
+
+def normalize_step(text):
+    normalized = normalize_answer(text)
+    tokens = [token for token in normalized.split() if token not in _MATCH_STOPWORDS]
+    return " ".join(tokens)
+
+
+def step_matches_action(step, action, match_strategy="lexical"):
+    validate_path_match_strategy(match_strategy)
+    step_text = normalize_step(step)
+    action_text = normalize_step(action)
+    if not step_text or not action_text:
+        return False
+    if step_text in action_text or action_text in step_text:
+        return True
+
+    step_tokens = set(step_text.split())
+    action_tokens = set(action_text.split())
+    if not step_tokens or not action_tokens:
+        return False
+
+    overlap = step_tokens & action_tokens
+    shorter_len = min(len(step_tokens), len(action_tokens))
+    if shorter_len == 1:
+        return bool(overlap) and len(step_tokens | action_tokens) <= 3
+    return len(overlap) / shorter_len >= 0.5
+
+
+def count_covered_steps(steps, actions, match_strategy="lexical"):
+    validate_path_match_strategy(match_strategy)
+    unique_actions = []
+    seen_actions = set()
+    for action in actions:
+        normalized_action = normalize_step(action)
+        if not normalized_action or normalized_action in seen_actions:
+            continue
+        seen_actions.add(normalized_action)
+        unique_actions.append(action)
+
+    matched_actions = set()
+    covered = 0
+    for step in steps:
+        for action_index, action in enumerate(unique_actions):
+            if action_index in matched_actions:
+                continue
+            if step_matches_action(step, action, match_strategy=match_strategy):
+                matched_actions.add(action_index)
+                covered += 1
+                break
+    return covered
+
+
+def compute_self_consistency_score(solution_str, match_strategy="lexical"):
+    validate_path_match_strategy(match_strategy)
+    steps = extract_plan_steps(solution_str)
+    actions = extract_tool_calls(solution_str)
+    r_planner = 1.0 if validate_planner_steps(steps) else 0.0
+    n_plan = len(steps)
+    n_actions = len(actions)
+
+    if r_planner == 0 or n_plan == 0 or n_actions == 0 or not validate_actions(actions):
+        return 0.0
+
+    n_exec_self = count_covered_steps(steps, actions, match_strategy=match_strategy)
+    return r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
 
 
 def is_valid_search_query(query):
@@ -76,7 +198,7 @@ def is_valid_search_query(query):
         return False
     if re.search(r"</?[^>]+>", query):
         return False
-    if re.search(r"https?://|www\.", query, re.IGNORECASE):
+    if _URL_PATTERN.search(query):
         return False
     if len(query.split()) > 32:
         return False
@@ -207,7 +329,9 @@ def compute_score_em(solution_str,
                      final_format_score=0,
                      retrieval_score=0,
                      format_score=0,
-                     score=1.):
+                     score=1.,
+                     path_reward_weight=0.,
+                     path_match_strategy="lexical"):
     """The scoring function for exact match (EM).
 
     Args:
@@ -217,37 +341,72 @@ def compute_score_em(solution_str,
         format_score: the score for the format
         score: the score for the correct answer
     """
+    return compute_score_components(
+        solution_str=solution_str,
+        ground_truth=ground_truth,
+        method=method,
+        structure_format_score=structure_format_score,
+        final_format_score=final_format_score,
+        retrieval_score=retrieval_score,
+        format_score=format_score,
+        score=score,
+        path_reward_weight=path_reward_weight,
+        path_match_strategy=path_match_strategy,
+    )["final_score"]
+
+
+def compute_score_components(solution_str,
+                             ground_truth,
+                             method='strict',
+                             structure_format_score=0,
+                             final_format_score=0,
+                             retrieval_score=0,
+                             format_score=0,
+                             score=1.,
+                             path_reward_weight=0.,
+                             path_match_strategy="lexical"):
+    validate_path_match_strategy(path_match_strategy)
     is_valid_format, _ = is_valid_sequence(solution_str)
     retrieval_correct = False
     if is_valid_format:
         retrieval_correct = is_retrieval_correct(solution_str, ground_truth['target'])
     answer = extract_solution(solution_str=solution_str)
-    do_print = random.randint(1, 64) == 1
-    
-    if do_print:
-        print(f"--------------------------------")
-        print(f"Golden answers: {ground_truth['target']}")
-        print(f"Extracted answer: {answer}")
-        print(f"Solution string: {solution_str}")
+    logger.debug(
+        "Reward score inputs: golden_answers=%s extracted_answer=%s solution=%s",
+        ground_truth['target'],
+        answer,
+        solution_str,
+    )
             
     if answer is None:
         if is_valid_format:
             if retrieval_correct:
-                return structure_format_score + retrieval_score # 0.3
+                base_score = structure_format_score + retrieval_score # 0.3
             else:
-                return structure_format_score # 0.2
+                base_score = structure_format_score # 0.2
         else:
-            return 0
+            base_score = 0
     else:
         if em_check(answer, ground_truth['target']):
             if is_valid_format:
-                return score # 1
+                base_score = score # 1
             else:
-                return score - structure_format_score # 0.8
+                base_score = score - structure_format_score # 0.8
         elif is_valid_format:
             if retrieval_correct:
-                return structure_format_score + retrieval_score # 0.3
+                base_score = structure_format_score + retrieval_score # 0.3
             else:
-                return structure_format_score # 0.2
+                base_score = structure_format_score # 0.2
         else:
-            return final_format_score # 0.1
+            base_score = final_format_score # 0.1
+
+    self_consistency = compute_self_consistency_score(solution_str, match_strategy=path_match_strategy)
+    path_bonus = path_reward_weight * self_consistency
+    final_score = base_score + path_bonus
+
+    return {
+        "base_score": base_score,
+        "self_consistency": self_consistency,
+        "path_bonus": path_bonus,
+        "final_score": final_score,
+    }
