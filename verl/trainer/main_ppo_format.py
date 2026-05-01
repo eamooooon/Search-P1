@@ -99,13 +99,20 @@ class RewardManager():
 
 import ray
 import hydra
+import os
 
 
 @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
 def main(config):
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        env_vars = {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}
+        env_vars.update({
+            key: value
+            for key in ['SWANLAB_API_KEY', 'SWANLAB_MODE', 'SWANLAB_WORKSPACE', 'SWANLAB_RUN_ID', 'SWANLAB_RESUME']
+            if (value := os.environ.get(key))
+        })
+        ray.init(runtime_env={'env_vars': env_vars})
 
     ray.get(main_task.remote(config))
 
