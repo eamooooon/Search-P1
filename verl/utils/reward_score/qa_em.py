@@ -61,24 +61,24 @@ def subem_check(prediction, golden_answers):
 
 def extract_solution(solution_str):
     """Extract the equation from the solution string."""
-    # Remove everything before the first "Assistant:"
-    # if "Assistant:" in solution_str:
-    #     solution_str = solution_str.split("Assistant:", 1)[1]
-    # elif "<|im_start|>assistant" in solution_str:
-    #     solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
-    # else:
-    #     return None
-    # solution_str = solution_str.split('\n')[-1]
+    assistant_marker = "<|im_start|>assistant"
+    if assistant_marker in solution_str:
+        solution_str = solution_str.rsplit(assistant_marker, 1)[1]
+        solution_str = solution_str.split("<|im_end|>", 1)[0]
+    solution_str = re.sub(
+        r"My previous action is invalid\.[^\n]*Let me try again\.",
+        "",
+        solution_str,
+    )
 
     answer_pattern = r'<answer>(.*?)</answer>'
     match = re.finditer(answer_pattern, solution_str, re.DOTALL)
     matches = list(match)
     
-    # If there are 0 or exactly 1 matches, return None
-    if len(matches) <= 1:
+    if len(matches) == 0:
         return None
     
-    # If there are 2 or more matches, return the last one
+    # Use the final answer tag when a trajectory contains multiple turns.
     return matches[-1].group(1).strip()
 
 
