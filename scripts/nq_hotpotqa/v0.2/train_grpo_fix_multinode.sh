@@ -11,7 +11,7 @@ export DATA_DIR=${DATA_DIR:-${PROJECT_DIR}/data/${data_name}} # first download t
 WAND_PROJECT="Search-R1"
 
 export BASE_MODEL=${PROJECT_DIR}/models/Qwen2.5-3B-Instruct
-export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-3b-it-em-v0.2-fix
+export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-3b-it-em-v0.2-multi
 # export BASE_MODEL='Qwen/Qwen2.5-7B-Instruct'
 # export EXPERIMENT_NAME=${data_name}-search-r1-grpo-qwen2.5-7b-it-em-multinode-${N_NODES}
 

@@ -919,9 +919,15 @@ class RayPPOTrainer(object):
                             output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
                             final_gen_batch_output = final_gen_batch_output.union(output)
 
-                        # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                        #                                         dtype=object)
-                        batch.non_tensor_batch['uid'] = batch.non_tensor_batch['index'].copy()
+                        # GRPO groups rollouts from the same prompt by uid. The merged QA
+                        # parquet reuses numeric indices across data sources, so include the
+                        # source to avoid normalizing rewards across different questions.
+                        indices = batch.non_tensor_batch['index']
+                        data_sources = batch.non_tensor_batch['data_source']
+                        batch.non_tensor_batch['uid'] = np.array(
+                            [f'{source}:{index}' for source, index in zip(data_sources, indices)],
+                            dtype=object,
+                        )
                                             
                         # repeat to align with repeated responses in rollout
                         batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)

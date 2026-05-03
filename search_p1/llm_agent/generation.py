@@ -394,6 +394,7 @@ class LLMGenerationManager:
                     is_search.append(1)
                 else:
                     next_obs.append(f'\nMy previous action is invalid. \
+I should first reason between <think> and </think>. \
 If I want to search, I should put the query between <search> and </search>. \
 If I want to give the final answer, I should put the answer between <answer> and </answer>. Let me try again.\n')
                     dones.append(0)
