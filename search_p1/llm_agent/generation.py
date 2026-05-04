@@ -234,6 +234,7 @@ class LLMGenerationManager:
         turns_stats = torch.ones(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_action_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_search_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
+        action_reason_stats = defaultdict(int)
         planner_seen = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.bool)
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
@@ -258,9 +259,11 @@ class LLMGenerationManager:
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # Execute in environment and process observations
-            next_obs, dones, valid_action, is_search = self.execute_predictions(
-                responses_str, self.tokenizer.pad_token, active_mask, planner_seen=planner_seen
+            next_obs, dones, valid_action, is_search, reason_stats = self.execute_predictions(
+                responses_str, self.tokenizer.pad_token, active_mask, planner_seen=planner_seen, return_reason_stats=True
             )
+            for reason, count in reason_stats.items():
+                action_reason_stats[reason] += count
             
             planner_seen = planner_seen | self._detect_plan_blocks(responses_str, active_mask)
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
@@ -302,9 +305,11 @@ class LLMGenerationManager:
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # # Execute in environment and process observations
-            _, dones, valid_action, is_search = self.execute_predictions(
-                responses_str, self.tokenizer.pad_token, active_mask, do_search=False, planner_seen=planner_seen
+            _, dones, valid_action, is_search, reason_stats = self.execute_predictions(
+                responses_str, self.tokenizer.pad_token, active_mask, do_search=False, planner_seen=planner_seen, return_reason_stats=True
             )
+            for reason, count in reason_stats.items():
+                action_reason_stats[reason] += count
 
             planner_seen = planner_seen | self._detect_plan_blocks(responses_str, active_mask)
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
@@ -323,6 +328,7 @@ class LLMGenerationManager:
         meta_info['active_mask'] = active_mask.tolist()
         meta_info['valid_action_stats'] = valid_action_stats.tolist()
         meta_info['valid_search_stats'] = valid_search_stats.tolist()
+        meta_info['action_reason_stats'] = dict(action_reason_stats)
         
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
@@ -403,7 +409,39 @@ class LLMGenerationManager:
             return False
         return True
 
-    def execute_predictions(self, predictions: List[str], pad_token: str, active_mask=None, do_search=True, planner_seen=None) -> List[str]:
+    def _missing_plan_reason(self, prediction: str) -> str:
+        plan_matches = list(re.finditer(r"<plan>(.*?)</plan>", prediction, re.DOTALL))
+        if len(plan_matches) == 0:
+            return "missing_plan"
+        if len(plan_matches) > 1:
+            return "duplicate_plan"
+        return "missing_or_invalid_plan_steps"
+
+    def _invalid_action_context_reason(self, prediction: str, match: re.Match, has_planned: bool) -> str:
+        if has_planned:
+            if re.search(r"</?plan>", prediction):
+                return "duplicate_plan"
+            pre_action_text = prediction[:match.start()]
+        else:
+            plan_matches = list(re.finditer(r"<plan>(.*?)</plan>", prediction, re.DOTALL))
+            if len(plan_matches) != 1:
+                return self._missing_plan_reason(prediction)
+            if match.start() < plan_matches[0].end():
+                return "action_before_plan"
+            pre_action_text = prediction[plan_matches[0].end():match.start()]
+
+        if not re.search(r"<reasoning>.*?</reasoning>\s*$", pre_action_text.strip(), re.DOTALL):
+            return "missing_reasoning"
+        return "unknown_invalid"
+
+    def _missing_action_tag_reason(self, prediction: str) -> str:
+        if not prediction or not prediction.strip():
+            return "empty_prediction"
+        if re.search(r"</?(tool_call|answer)\b[^>]*>", prediction, re.DOTALL):
+            return "malformed_action_tag"
+        return "missing_action_tag"
+
+    def execute_predictions(self, predictions: List[str], pad_token: str, active_mask=None, do_search=True, planner_seen=None, return_reason_stats=False) -> List[str]:
         """
         Execute predictions across multiple environments.
         NOTE: the function is the actual `step` function in the environment
@@ -417,7 +455,12 @@ class LLMGenerationManager:
         Returns:
             List of observation strings
         """
-        cur_actions, contents = self.postprocess_predictions(predictions, planner_seen=planner_seen, active_mask=active_mask)
+        cur_actions, contents, reasons = self.postprocess_predictions(
+            predictions, planner_seen=planner_seen, active_mask=active_mask, return_reasons=True
+        )
+        reason_stats = defaultdict(int)
+        for reason in reasons:
+            reason_stats[reason] += 1
         next_obs, dones, valid_action, is_search = [], [], [], []
         
         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
@@ -456,9 +499,11 @@ For the final answer, output only the concise answer inside the answer tag pair.
             
         assert len(search_results) == 0
             
+        if return_reason_stats:
+            return next_obs, dones, valid_action, is_search, dict(reason_stats)
         return next_obs, dones, valid_action, is_search
 
-    def postprocess_predictions(self, predictions: List[Any], planner_seen=None, active_mask=None) -> Tuple[List[int], List[bool]]:
+    def postprocess_predictions(self, predictions: List[Any], planner_seen=None, active_mask=None, return_reasons=False) -> Tuple[List[int], List[bool]]:
         """
         Process (text-based) predictions from llm into actions and validity flags.
         
@@ -470,6 +515,7 @@ For the final answer, output only the concise answer inside the answer tag pair.
         """
         actions = []
         contents = []
+        reasons = []
                 
         if planner_seen is None:
             planner_seen = [False] * len(predictions)
@@ -478,6 +524,7 @@ For the final answer, output only the concise answer inside the answer tag pair.
 
         for prediction, has_planned, active in zip(predictions, planner_seen, active_mask):
             if isinstance(prediction, str): # for llm output
+                reason = "inactive"
                 pattern = r'<(tool_call|answer)>(.*?)</\1>'
                 match = re.search(pattern, prediction, re.DOTALL)
                 if match:
@@ -486,23 +533,34 @@ For the final answer, output only the concise answer inside the answer tag pair.
                     action = 'search' if action_tag == 'tool_call' else action_tag
                     has_plan = bool(has_planned) or self._has_valid_plan(prediction)
                     if active and not has_plan:
+                        reason = self._missing_plan_reason(prediction)
                         content = ''
                         action = None
                     elif active and not self._action_has_required_context(prediction, match, bool(has_planned)):
+                        reason = self._invalid_action_context_reason(prediction, match, bool(has_planned))
                         content = ''
                         action = None
                     elif action == 'search' and not self._is_valid_search_query(content):
+                        if active:
+                            reason = "invalid_tool_call"
                         content = ''
                         action = None
+                    elif active:
+                        reason = f"valid_{action}"
                 else:
                     content = ''
                     action = None
+                    if active:
+                        reason = self._missing_action_tag_reason(prediction)
             else:
                 raise ValueError(f"Invalid prediction type: {type(prediction)}")
             
             actions.append(action)
             contents.append(content)
+            reasons.append(reason)
             
+        if return_reasons:
+            return actions, contents, reasons
         return actions, contents
 
     def batch_search(self, queries: List[str] = None) -> str:

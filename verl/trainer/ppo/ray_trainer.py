@@ -178,6 +178,20 @@ def _compute_response_info(batch):
 
 
 REWARD_COMPONENT_KEYS = ("base_score", "self_consistency", "path_bonus", "final_score")
+VALID_ACTION_REASON_KEYS = {"valid_search", "valid_answer", "inactive"}
+INVALID_ACTION_REASON_KEYS = {
+    "missing_plan",
+    "duplicate_plan",
+    "missing_or_invalid_plan_steps",
+    "action_before_plan",
+    "missing_reasoning",
+    "invalid_tool_call",
+    "missing_action_tag",
+    "empty_prediction",
+    "malformed_action_tag",
+    "unknown_invalid",
+}
+ACTION_REASON_KEYS = VALID_ACTION_REASON_KEYS | INVALID_ACTION_REASON_KEYS
 
 
 def _compute_reward_component_metrics(meta_info, prefix='reward'):
@@ -194,6 +208,34 @@ def _compute_reward_component_metrics(meta_info, prefix='reward'):
         metrics[f'{prefix}/{component_name}/mean'] = float(component_values.mean())
         metrics[f'{prefix}/{component_name}/max'] = float(component_values.max())
         metrics[f'{prefix}/{component_name}/min'] = float(component_values.min())
+    return metrics
+
+
+def _compute_action_reason_metrics(meta_info, prefix='env'):
+    metrics = {}
+    reason_stats = meta_info.get('action_reason_stats')
+    if not reason_stats:
+        return metrics
+
+    reason_counts = {
+        str(reason): float(count)
+        for reason, count in reason_stats.items()
+        if reason in ACTION_REASON_KEYS and isinstance(count, (int, float, np.integer, np.floating))
+    }
+    total_actions = sum(reason_counts.values())
+    total_invalid = sum(
+        count for reason, count in reason_counts.items()
+        if reason in INVALID_ACTION_REASON_KEYS
+    )
+    metrics[f'{prefix}/invalid_action/total'] = float(total_invalid)
+    metrics[f'{prefix}/invalid_action/ratio'] = float(total_invalid / total_actions) if total_actions else 0.0
+
+    for reason, count in reason_counts.items():
+        metrics[f'{prefix}/action_reason/{reason}/count'] = float(count)
+        metrics[f'{prefix}/action_reason/{reason}/ratio'] = float(count / total_actions) if total_actions else 0.0
+        if reason in INVALID_ACTION_REASON_KEYS:
+            metrics[f'{prefix}/invalid_action/{reason}/count'] = float(count)
+            metrics[f'{prefix}/invalid_action/{reason}/ratio'] = float(count / total_invalid) if total_invalid else 0.0
     return metrics
 
 
@@ -297,6 +339,7 @@ def compute_data_metrics(batch, use_critic=True):
         metrics['env/number_of_valid_search'] = float(np.array(batch.meta_info['valid_search_stats'], dtype=np.int16).mean())
 
     metrics.update(_compute_reward_component_metrics(batch.meta_info))
+    metrics.update(_compute_action_reason_metrics(batch.meta_info))
 
     return metrics
 
@@ -605,6 +648,7 @@ class RayPPOTrainer(object):
         reward_tensor_lst = []
         data_source_lst = []
         reward_component_values = defaultdict(list)
+        action_reason_stats = defaultdict(float)
 
         gen_config = GenerationConfig(
             max_turns=self.config.max_turns,
@@ -693,6 +737,8 @@ class RayPPOTrainer(object):
                     reward_tensor = self.val_reward_fn(test_batch)
                     for key, values in test_batch.meta_info.get('reward_components', {}).items():
                         reward_component_values[key].extend(values)
+                    for reason, count in test_batch.meta_info.get('action_reason_stats', {}).items():
+                        action_reason_stats[reason] += count
 
                     reward_tensor_lst.append(reward_tensor)
                     data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -715,6 +761,10 @@ class RayPPOTrainer(object):
         metric_dict.update(_compute_reward_component_metrics(
             {'reward_components': reward_component_values},
             prefix='val/reward',
+        ))
+        metric_dict.update(_compute_action_reason_metrics(
+            {'action_reason_stats': action_reason_stats},
+            prefix='val/env',
         ))
 
         return metric_dict
