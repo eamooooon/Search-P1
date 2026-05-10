@@ -23,6 +23,12 @@ class GenerationConfig:
     topk: int = 3
 
 class LLMGenerationManager:
+    PLAN_ACCEPTED_OBSERVATION = (
+        "\nPlan accepted. Do not output <plan> again. Now output exactly one "
+        "<reasoning>...</reasoning> followed by one <tool_call>...</tool_call> "
+        "or <answer>...</answer>.\n"
+    )
+
     def __init__(
         self,
         tokenizer,
@@ -257,15 +263,23 @@ class LLMGenerationManager:
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # Execute in environment and process observations
-            next_obs, dones, valid_action, is_search, reason_stats = self.execute_predictions(
+            next_obs, dones, valid_action, is_search, reason_stats, action_reasons = self.execute_predictions(
                 responses_str,
                 self.tokenizer.pad_token,
                 active_mask,
                 planner_seen=planner_seen,
                 return_reason_stats=True,
+                return_reasons=True,
             )
             for reason, count in reason_stats.items():
                 action_reason_stats[reason] += count
+            plan_only_mask = self._plan_only_mask_from_reasons(action_reasons, active_mask)
+            responses_ids_for_state = self._accepted_response_ids_for_state(
+                responses_str,
+                responses_ids,
+                active_mask,
+                plan_only_mask,
+            )
             
             planner_seen = planner_seen | self._detect_plan_blocks(responses_str, active_mask)
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
@@ -276,17 +290,21 @@ class LLMGenerationManager:
             valid_search_stats += torch.tensor(is_search, dtype=torch.int)
 
             next_obs_ids = self._process_next_obs(next_obs)
+            next_obs_ids_for_final = self._mask_plan_only_observations_for_final_trajectory(
+                next_obs_ids,
+                plan_only_mask,
+            )
             
             # Update states
             rollings = self._update_rolling_state(
                 rollings,
-                responses_ids,
+                responses_ids_for_state,
                 next_obs_ids
             )
             original_right_side = self._update_right_side(
                 original_right_side,
-                responses_ids,
-                next_obs_ids
+                responses_ids_for_state,
+                next_obs_ids_for_final
             )
             
         # final LLM rollout
@@ -307,16 +325,25 @@ class LLMGenerationManager:
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # # Execute in environment and process observations
-            _, dones, valid_action, is_search, reason_stats = self.execute_predictions(
+            _, dones, valid_action, is_search, reason_stats, action_reasons = self.execute_predictions(
                 responses_str,
                 self.tokenizer.pad_token,
                 active_mask,
                 do_search=False,
                 planner_seen=planner_seen,
+                allow_plan_only=False,
                 return_reason_stats=True,
+                return_reasons=True,
             )
             for reason, count in reason_stats.items():
                 action_reason_stats[reason] += count
+            plan_only_mask = self._plan_only_mask_from_reasons(action_reasons, active_mask)
+            responses_ids_for_state = self._accepted_response_ids_for_state(
+                responses_str,
+                responses_ids,
+                active_mask,
+                plan_only_mask,
+            )
 
             planner_seen = planner_seen | self._detect_plan_blocks(responses_str, active_mask)
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
@@ -328,7 +355,7 @@ class LLMGenerationManager:
 
             original_right_side = self._update_right_side(
                 original_right_side,
-                responses_ids,
+                responses_ids_for_state,
             )
         
         meta_info['turns_stats'] = turns_stats.tolist()
@@ -398,6 +425,75 @@ class LLMGenerationManager:
             re.DOTALL | re.IGNORECASE,
         )
         return any(step.strip() for step in steps)
+
+    def _extract_accepted_plan_prefix(self, prediction: str) -> str:
+        plan_match = re.search(r"<plan>.*?</plan>", prediction, re.DOTALL)
+        if not plan_match:
+            return prediction
+        return prediction[:plan_match.end()]
+
+    def _is_valid_plan_only_turn(self, prediction: str, has_planned: bool) -> bool:
+        if has_planned or not self._has_valid_plan(prediction):
+            return False
+        plan_match = re.search(r"<plan>.*?</plan>", prediction, re.DOTALL)
+        if not plan_match:
+            return False
+        post_plan = prediction[plan_match.end():]
+        if re.search(
+            r"</?(?:plan|tool_call|tool_response|answer|search|think|information)\b",
+            post_plan,
+            re.DOTALL,
+        ):
+            return False
+        tag_names = re.findall(r"</?([A-Za-z_][\w-]*)\b[^>]*>", post_plan)
+        return all(tag_name == "reasoning" for tag_name in tag_names)
+
+    def _plan_only_mask_from_reasons(self, reasons: List[str], active_mask) -> List[bool]:
+        return [
+            reason == "valid_plan" and self._mask_value_to_bool(active)
+            for reason, active in zip(reasons, active_mask)
+        ]
+
+    def _accepted_response_ids_for_state(
+        self,
+        responses_str: List[str],
+        responses_ids: torch.Tensor,
+        active_mask,
+        plan_only_mask: List[bool],
+    ) -> torch.Tensor:
+        if not any(plan_only_mask):
+            return responses_ids
+
+        accepted_responses = [
+            self._extract_accepted_plan_prefix(response) if is_plan_only else response
+            for response, is_plan_only in zip(responses_str, plan_only_mask)
+        ]
+        active_responses = [
+            response
+            for response, active in zip(accepted_responses, active_mask)
+            if self._mask_value_to_bool(active)
+        ]
+        accepted_response_ids = self._batch_tokenize(active_responses)
+        padded_response_ids, _ = self.tensor_fn._example_level_pad(
+            accepted_response_ids,
+            active_responses,
+            active_mask,
+        )
+        return padded_response_ids
+
+    def _mask_plan_only_observations_for_final_trajectory(
+        self,
+        next_obs_ids: torch.Tensor,
+        plan_only_mask: List[bool],
+    ) -> torch.Tensor:
+        if not any(plan_only_mask):
+            return next_obs_ids
+
+        final_next_obs_ids = next_obs_ids.clone()
+        for row_idx, is_plan_only in enumerate(plan_only_mask):
+            if is_plan_only:
+                final_next_obs_ids[row_idx].fill_(self.tokenizer.pad_token_id)
+        return final_next_obs_ids
 
     def _mask_value_to_bool(self, value: Any) -> bool:
         if isinstance(value, torch.Tensor):
@@ -586,6 +682,8 @@ class LLMGenerationManager:
         do_search=True,
         planner_seen=None,
         return_reason_stats=False,
+        allow_plan_only=True,
+        return_reasons=False,
     ) -> Tuple:
         """
         Execute predictions across multiple environments.
@@ -607,6 +705,7 @@ class LLMGenerationManager:
             predictions,
             planner_seen=planner_seen,
             active_mask=active_mask,
+            allow_plan_only=allow_plan_only,
             return_reasons=True,
         )
         reason_stats: DefaultDict[str, int] = defaultdict(int)
@@ -616,7 +715,7 @@ class LLMGenerationManager:
         
         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
         search_results: List[str]
-        if do_search:
+        if do_search and search_queries:
             search_results = self.batch_search(search_queries)
             assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
         else:
@@ -637,6 +736,11 @@ class LLMGenerationManager:
                 if action == 'answer':
                     next_obs.append('')
                     dones.append(1)
+                    valid_action.append(1)
+                    is_search.append(0)
+                elif action == 'plan':
+                    next_obs.append(self.PLAN_ACCEPTED_OBSERVATION)
+                    dones.append(0)
                     valid_action.append(1)
                     is_search.append(0)
                 elif action == 'search':
@@ -667,8 +771,12 @@ class LLMGenerationManager:
             planner_seen,
         )
 
+        if return_reason_stats and return_reasons:
+            return next_obs, dones, valid_action, is_search, dict(reason_stats), reasons
         if return_reason_stats:
             return next_obs, dones, valid_action, is_search, dict(reason_stats)
+        if return_reasons:
+            return next_obs, dones, valid_action, is_search, reasons
         return next_obs, dones, valid_action, is_search
 
     def postprocess_predictions(
@@ -676,6 +784,7 @@ class LLMGenerationManager:
         predictions: List[Any],
         planner_seen=None,
         active_mask=None,
+        allow_plan_only=True,
         return_reasons=False,
     ) -> Tuple:
         """
@@ -733,7 +842,11 @@ class LLMGenerationManager:
                     content = ''
                     action = None
                     if active:
-                        reason = self._missing_action_tag_reason(prediction, has_planned)
+                        if allow_plan_only and self._is_valid_plan_only_turn(prediction, has_planned):
+                            action = 'plan'
+                            reason = "valid_plan"
+                        else:
+                            reason = self._missing_action_tag_reason(prediction, has_planned)
             else:
                 raise ValueError(f"Invalid prediction type: {type(prediction)}")
             
