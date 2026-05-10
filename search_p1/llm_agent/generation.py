@@ -2,13 +2,13 @@ import torch
 import re
 from collections import defaultdict
 import os
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional, DefaultDict
 from dataclasses import dataclass
 from .tensor_helper import TensorHelper, TensorConfig
 from verl import DataProto
 from verl.utils.tracking import Tracking
 import shutil
-import requests
+import requests  # type: ignore[import-untyped]
 
 @dataclass
 class GenerationConfig:
@@ -19,7 +19,7 @@ class GenerationConfig:
     max_obs_length: int
     num_gpus: int
     no_think_rl: bool=False
-    search_url: str = None
+    search_url: Optional[str] = None
     topk: int = 3
 
 class LLMGenerationManager:
@@ -51,7 +51,7 @@ class LLMGenerationManager:
             padding="longest"
         )['input_ids']
 
-    def _postprocess_responses(self, responses: torch.Tensor) -> torch.Tensor:
+    def _postprocess_responses(self, responses: torch.Tensor) -> Tuple[torch.Tensor, List[str]]:
         """Process responses to stop at tool-call operation or answer operation."""
         responses_str = self.tokenizer.batch_decode(
             responses, 
@@ -62,10 +62,6 @@ class LLMGenerationManager:
 
         if self.config.no_think_rl:
             raise ValueError('stop')
-            # if no_think_rl is enabled, only keep action in the str
-            actions, _ = self.env.postprocess_predictions(responses_str)
-            responses_str=[f"<answer>{envs[idx].ACTION_LOOKUP[action]}</answer>" for idx, action in enumerate(actions)]
-            print("RESPONSES:", responses_str)
         responses = self._batch_tokenize(responses_str)
         return responses, responses_str
 
@@ -97,8 +93,8 @@ class LLMGenerationManager:
 
         return next_obs_ids
 
-    def _update_rolling_state(self, rollings: DataProto, cur_responses: torch.Tensor, 
-                            next_obs_ids: torch.Tensor) -> Dict:
+    def _update_rolling_state(self, rollings: DataProto, cur_responses: torch.Tensor,
+                            next_obs_ids: torch.Tensor) -> Any:
         """Update rolling state with new responses and observations."""
         # Concatenate and handle padding        
         new_input_ids = self.tensor_fn.concatenate_with_padding([
@@ -112,7 +108,7 @@ class LLMGenerationManager:
         new_position_ids = self.tensor_fn.create_position_ids(new_attention_mask)
 
         # Cut to appropriate length
-        effective_len = new_attention_mask.sum(dim=1).max()
+        effective_len = int(new_attention_mask.sum(dim=1).max().item())
         max_len = min(self.config.max_prompt_length, effective_len)
 
         new_rollings = DataProto.from_dict({
@@ -128,9 +124,9 @@ class LLMGenerationManager:
                 prompt: torch.Tensor, 
                 prompt_with_mask: torch.Tensor, 
                 response: torch.Tensor, 
-                info: torch.Tensor = None,
+                info: Optional[torch.Tensor] = None,
                 pad_to_left: bool = True
-            ) -> torch.Tensor:
+            ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Concatenate tensors and handle padding. Additionally, create a mask (info_mask) to cover the tool response block if it exists."""
         pad_id = self.tokenizer.pad_token_id
         tensors = [prompt, response]
@@ -150,10 +146,10 @@ class LLMGenerationManager:
         return padded_tensor, padded_tensor_with_info
 
     def _update_right_side(self, right_side: Dict, 
-                          cur_responses: torch.Tensor,
-                          next_obs_ids: torch.Tensor = None) -> Dict:
+                           cur_responses: torch.Tensor,
+                           next_obs_ids: Optional[torch.Tensor] = None) -> Dict:
         """Update right side state."""
-        if next_obs_ids != None:
+        if next_obs_ids is not None:
             responses, responses_with_info_mask = self._info_masked_concatenate_with_padding(
                     right_side['responses'],
                     right_side['responses_with_info_mask'],
@@ -168,7 +164,7 @@ class LLMGenerationManager:
                     cur_responses,
                     pad_to_left=False
                 )
-        effective_len = self.tensor_fn.create_attention_mask(responses).sum(dim=1).max()
+        effective_len = int(self.tensor_fn.create_attention_mask(responses).sum(dim=1).max().item())
         max_len = min(self.config.max_prompt_length, effective_len)
         
         return {'responses': responses[:, :max_len], 'responses_with_info_mask': responses_with_info_mask[:, :max_len]}
@@ -224,7 +220,7 @@ class LLMGenerationManager:
         padded_output.batch = trimmed_batch
         return padded_output
 
-    def run_llm_loop(self, gen_batch, initial_input_ids: torch.Tensor) -> Tuple[Dict, Dict]:
+    def run_llm_loop(self, gen_batch, initial_input_ids: torch.Tensor) -> Any:
         """Run main LLM generation loop."""
         
         original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
@@ -234,10 +230,12 @@ class LLMGenerationManager:
         turns_stats = torch.ones(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_action_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_search_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
-        action_reason_stats = defaultdict(int)
+        action_reason_stats: DefaultDict[str, int] = defaultdict(int)
         planner_seen = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.bool)
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
+        self._rollout_debug_samples_remaining = self._rollout_debug_sample_limit()
+        self._rollout_debug_samples_emitted = 0
 
         # Main generation loop
         for step in range(self.config.max_turns):
@@ -345,7 +343,7 @@ class LLMGenerationManager:
 
     def _compose_final_output(self, left_side: Dict,
                             right_side: Dict,
-                            meta_info: Dict) -> Tuple[Dict, Dict]:
+                            meta_info: Dict) -> Any:
         """Compose final generation output."""
         final_output = right_side.copy()
         final_output['prompts'] = left_side['input_ids']
@@ -370,17 +368,17 @@ class LLMGenerationManager:
             final_output['attention_mask']
         )
         
-        final_output = DataProto.from_dict(final_output)
-        final_output.meta_info.update(meta_info)
+        final_data = DataProto.from_dict(final_output)
+        final_data.meta_info.update(meta_info)
         
-        return final_output
+        return final_data
 
     def _detect_plan_blocks(self, predictions: List[str], active_mask=None) -> torch.Tensor:
         if active_mask is None:
             active_mask = [True] * len(predictions)
         flags = []
         for prediction, active in zip(predictions, active_mask):
-            flags.append(bool(active) and self._has_valid_plan(prediction))
+            flags.append(self._mask_value_to_bool(active) and self._has_valid_plan(prediction))
         return torch.tensor(flags, dtype=torch.bool)
 
     def _has_valid_plan(self, prediction: str) -> bool:
@@ -400,6 +398,13 @@ class LLMGenerationManager:
             re.DOTALL | re.IGNORECASE,
         )
         return any(step.strip() for step in steps)
+
+    def _mask_value_to_bool(self, value: Any) -> bool:
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 0:
+                return False
+            return bool(value.detach().reshape(-1)[0].item())
+        return bool(value)
 
     def _has_single_reasoning_block(self, text: str) -> bool:
         return bool(
@@ -437,6 +442,59 @@ class LLMGenerationManager:
             return False
         return True
 
+    def _rollout_debug_sample_limit(self) -> int:
+        raw_limit = os.environ.get("SEARCH_P1_ROLLOUT_DEBUG_SAMPLES", "0")
+        try:
+            return max(0, int(raw_limit))
+        except ValueError:
+            print(
+                "[SEARCH_P1_ROLLOUT_DEBUG] Ignoring invalid "
+                f"SEARCH_P1_ROLLOUT_DEBUG_SAMPLES={raw_limit!r}; expected int."
+            )
+            return 0
+
+    def _clip_debug_text(self, text: Any, max_chars: int = 240) -> str:
+        text = "" if text is None else str(text)
+        text = text.replace("\n", "\\n")
+        if len(text) > max_chars:
+            return text[:max_chars] + "...<truncated>"
+        return text
+
+    def _maybe_print_rollout_debug_samples(
+        self,
+        predictions: List[str],
+        next_obs: List[str],
+        reasons: List[str],
+        active_mask,
+        planner_seen,
+    ) -> None:
+        remaining = getattr(self, "_rollout_debug_samples_remaining", 0)
+        if remaining <= 0:
+            return
+        if planner_seen is None:
+            planner_seen = [False] * len(predictions)
+
+        emitted = getattr(self, "_rollout_debug_samples_emitted", 0)
+        for prediction, observation, reason, active, has_planned in zip(
+            predictions, next_obs, reasons, active_mask, planner_seen
+        ):
+            if remaining <= 0:
+                break
+            if not self._mask_value_to_bool(active):
+                continue
+            has_planned = self._mask_value_to_bool(has_planned)
+            print(
+                "[SEARCH_P1_ROLLOUT_DEBUG] "
+                f"sample={emitted} reason={reason} planner_seen={has_planned} "
+                f"prediction={self._clip_debug_text(prediction)} "
+                f"observation={self._clip_debug_text(observation)}"
+            )
+            emitted += 1
+            remaining -= 1
+
+        self._rollout_debug_samples_emitted = emitted
+        self._rollout_debug_samples_remaining = remaining
+
     def _missing_plan_reason(self, prediction: str) -> str:
         plan_matches = list(re.finditer(r"<plan>(.*?)</plan>", prediction, re.DOTALL))
         if len(plan_matches) == 0:
@@ -464,12 +522,16 @@ class LLMGenerationManager:
             pre_action_text = prediction[plan_matches[0].end():match.start()]
 
         if not re.search(r"<reasoning>.*?</reasoning>", pre_action_text, re.DOTALL):
+            if re.search(r"</?(?:search|think|information)\b", pre_action_text, re.DOTALL):
+                return "malformed_action_tag"
             return "missing_reasoning"
         return "unknown_invalid"
 
-    def _missing_action_tag_reason(self, prediction: str) -> str:
+    def _missing_action_tag_reason(self, prediction: str, has_planned: bool = False) -> str:
         if not prediction or not prediction.strip():
             return "empty_prediction"
+        if has_planned and re.search(r"</?plan>", prediction):
+            return "duplicate_plan"
         if re.search(
             r"</?(tool_call|answer|search|think|information)\b[^>]*>",
             prediction,
@@ -477,6 +539,44 @@ class LLMGenerationManager:
         ):
             return "malformed_action_tag"
         return "missing_action_tag"
+
+    def _invalid_action_observation(self, has_planned: bool, reason: str) -> str:
+        if has_planned:
+            base = (
+                "My previous action is invalid. A valid <plan> has already been accepted. "
+                "Do not output <plan> again. Output exactly one "
+                "<reasoning>...</reasoning> block followed by exactly one "
+                "<tool_call>...</tool_call> or <answer>...</answer> block."
+            )
+        else:
+            base = (
+                "My previous action is invalid. No valid <plan> has been accepted yet. "
+                "First output one complete <plan>...</plan> with numbered Search steps, "
+                "then output one <reasoning>...</reasoning> block followed by one "
+                "<tool_call>...</tool_call> or <answer>...</answer> block."
+            )
+
+        extra = ""
+        if reason == "malformed_action_tag":
+            extra = (
+                " Old <search>, <think>, and <information> tags are deprecated; "
+                "the trajectory vocabulary is <reasoning>, <tool_call>, and "
+                "<tool_response>."
+            )
+        elif reason == "missing_action_tag":
+            extra = (
+                " This turn must end with a legal action tag: "
+                "</tool_call> for search or </answer> for the final answer."
+            )
+        elif reason == "missing_reasoning":
+            extra = " Reasoning must immediately precede the action tag."
+        elif reason == "duplicate_plan":
+            if has_planned:
+                extra = " Repeating <plan> after a valid plan is invalid."
+            else:
+                extra = " Output exactly one valid <plan> block."
+
+        return f"\n{base}{extra} Let me try again.\n"
 
     def execute_predictions(
         self,
@@ -509,19 +609,24 @@ class LLMGenerationManager:
             active_mask=active_mask,
             return_reasons=True,
         )
-        reason_stats = defaultdict(int)
+        reason_stats: DefaultDict[str, int] = defaultdict(int)
         for reason in reasons:
             reason_stats[reason] += 1
         next_obs, dones, valid_action, is_search = [], [], [], []
         
         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
+        search_results: List[str]
         if do_search:
             search_results = self.batch_search(search_queries)
             assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
         else:
             search_results = [''] * sum([1 for action in cur_actions if action == 'search'])
 
+        if planner_seen is None:
+            planner_seen = [False] * len(predictions)
+
         for i, (action, active) in enumerate(zip(cur_actions, active_mask)):
+            active = self._mask_value_to_bool(active)
             
             if not active:
                 next_obs.append('')
@@ -540,16 +645,28 @@ class LLMGenerationManager:
                     valid_action.append(1)
                     is_search.append(1)
                 else:
-                    next_obs.append(f'\nMy previous action is invalid. \
-First provide a complete plan with numbered Search steps, then reason before taking an action. \
-For a search action, output only one clean natural-language query inside the tool_call tag pair. \
-For the final answer, output only the concise answer inside the answer tag pair. Let me try again.\n')
+                    has_planned_for_feedback = self._mask_value_to_bool(
+                        planner_seen[i]
+                    ) or self._has_valid_plan(predictions[i])
+                    next_obs.append(
+                        self._invalid_action_observation(
+                            has_planned_for_feedback,
+                            reasons[i],
+                        )
+                    )
                     dones.append(0)
                     valid_action.append(0)
                     is_search.append(0)
-            
+
         assert len(search_results) == 0
-            
+        self._maybe_print_rollout_debug_samples(
+            predictions,
+            next_obs,
+            reasons,
+            active_mask,
+            planner_seen,
+        )
+
         if return_reason_stats:
             return next_obs, dones, valid_action, is_search, dict(reason_stats)
         return next_obs, dones, valid_action, is_search
@@ -571,9 +688,9 @@ For the final answer, output only the concise answer inside the answer tag pair.
             Tuple of (actions list, contents list), with reasons appended when
             return_reasons is True.
         """
-        actions = []
-        contents = []
-        reasons = []
+        actions: List[Any] = []
+        contents: List[str] = []
+        reasons: List[str] = []
                 
         if planner_seen is None:
             planner_seen = [False] * len(predictions)
@@ -581,6 +698,8 @@ For the final answer, output only the concise answer inside the answer tag pair.
             active_mask = [True] * len(predictions)
 
         for prediction, has_planned, active in zip(predictions, planner_seen, active_mask):
+            has_planned = self._mask_value_to_bool(has_planned)
+            active = self._mask_value_to_bool(active)
             if isinstance(prediction, str): # for llm output
                 reason = "inactive"
                 if not active:
@@ -594,13 +713,13 @@ For the final answer, output only the concise answer inside the answer tag pair.
                     content = match.group(2).strip()  # Return only the content inside the tags
                     action_tag = match.group(1)
                     action = 'search' if action_tag == 'tool_call' else action_tag
-                    has_plan = bool(has_planned) or self._has_valid_plan(prediction)
+                    has_plan = has_planned or self._has_valid_plan(prediction)
                     if active and not has_plan:
                         reason = self._missing_plan_reason(prediction)
                         content = ''
                         action = None
-                    elif active and not self._action_has_required_context(prediction, match, bool(has_planned)):
-                        reason = self._invalid_action_context_reason(prediction, match, bool(has_planned))
+                    elif active and not self._action_has_required_context(prediction, match, has_planned):
+                        reason = self._invalid_action_context_reason(prediction, match, has_planned)
                         content = ''
                         action = None
                     elif action == 'search' and not self._is_valid_search_query(content):
@@ -614,7 +733,7 @@ For the final answer, output only the concise answer inside the answer tag pair.
                     content = ''
                     action = None
                     if active:
-                        reason = self._missing_action_tag_reason(prediction)
+                        reason = self._missing_action_tag_reason(prediction, has_planned)
             else:
                 raise ValueError(f"Invalid prediction type: {type(prediction)}")
             
@@ -626,7 +745,7 @@ For the final answer, output only the concise answer inside the answer tag pair.
             return actions, contents, reasons
         return actions, contents
 
-    def batch_search(self, queries: List[str] = None) -> str:
+    def batch_search(self, queries: Optional[List[str]] = None) -> List[str]:
         """
         Batchified search for queries.
         Args:
