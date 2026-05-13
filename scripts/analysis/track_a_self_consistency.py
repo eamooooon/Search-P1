@@ -5,6 +5,7 @@ from collections import Counter
 from importlib import util
 from pathlib import Path
 from statistics import mean
+from typing import Optional
 
 
 TRACK_A_KEYS = (
@@ -24,7 +25,7 @@ def load_reward_module(repo_root: Path):
     return module
 
 
-def iter_jsonl(path: Path, limit: int | None = None):
+def iter_jsonl(path: Path, limit: Optional[int] = None):
     count = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
