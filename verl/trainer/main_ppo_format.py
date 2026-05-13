@@ -18,6 +18,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 from verl import DataProto
 import torch
 from verl.utils.reward_score import qa_em, qa_em_format
+from verl.trainer.trajectory_dump import _append_trajectory_dump
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
@@ -43,7 +44,10 @@ class RewardManager():
                  final_format_score=0.,
                  retrieval_score=0.,
                  format_score=0.,
-                 path_match_strategy="lexical") -> None:
+                 path_match_strategy="lexical",
+                 trajectory_dump_path=None,
+                 trajectory_dump_limit=0,
+                 trajectory_dump_split=None) -> None:
         qa_em_format.validate_path_match_strategy(path_match_strategy)
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
@@ -52,6 +56,31 @@ class RewardManager():
         self.final_format_score = final_format_score
         self.retrieval_score = retrieval_score
         self.path_match_strategy = path_match_strategy
+        self.trajectory_dump_path = trajectory_dump_path
+        self.trajectory_dump_limit = int(trajectory_dump_limit or 0)
+        self.trajectory_dump_split = trajectory_dump_split
+        self._trajectory_dump_count = 0
+
+    def _should_dump_trajectory(self):
+        if not self.trajectory_dump_path:
+            return False
+        if self.trajectory_dump_limit == 0:
+            return False
+        return self.trajectory_dump_limit < 0 or self._trajectory_dump_count < self.trajectory_dump_limit
+
+    def _dump_trajectory(self, *, solution_str, ground_truth, data_source, components):
+        if not self._should_dump_trajectory():
+            return
+        _append_trajectory_dump(
+            self.trajectory_dump_path,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            data_source=data_source,
+            split=self.trajectory_dump_split,
+            index=self._trajectory_dump_count,
+            track_a=components,
+        )
+        self._trajectory_dump_count += 1
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -129,6 +158,12 @@ class RewardManager():
             reward_tensor[i, valid_response_length - 1] = score
             for key, value in components.items():
                 reward_components[key].append(float(value))
+            self._dump_trajectory(
+                solution_str=sequences_str,
+                ground_truth=ground_truth,
+                data_source=data_source,
+                components=components,
+            )
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -149,6 +184,8 @@ def _reward_manager_kwargs(config):
         "final_format_score": config.reward_model.final_format_score,
         "retrieval_score": config.reward_model.retrieval_score,
         "path_match_strategy": path_match_strategy,
+        "trajectory_dump_path": getattr(config.reward_model, "trajectory_dump_path", None),
+        "trajectory_dump_limit": getattr(config.reward_model, "trajectory_dump_limit", 0),
     }
 
 
@@ -243,10 +280,10 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, **reward_config)
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, trajectory_dump_split="train", **reward_config)
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, **reward_config)
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, trajectory_dump_split="val", **reward_config)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,
