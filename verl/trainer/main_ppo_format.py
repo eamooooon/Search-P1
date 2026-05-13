@@ -43,7 +43,6 @@ class RewardManager():
                  final_format_score=0.,
                  retrieval_score=0.,
                  format_score=0.,
-                 path_reward_weight=0.,
                  path_match_strategy="lexical") -> None:
         qa_em_format.validate_path_match_strategy(path_match_strategy)
         self.tokenizer = tokenizer
@@ -52,7 +51,6 @@ class RewardManager():
         self.structure_format_score = structure_format_score
         self.final_format_score = final_format_score
         self.retrieval_score = retrieval_score
-        self.path_reward_weight = path_reward_weight
         self.path_match_strategy = path_match_strategy
 
     def __call__(self, data: DataProto):
@@ -67,7 +65,10 @@ class RewardManager():
         reward_components = {
             "base_score": [],
             "self_consistency": [],
-            "path_bonus": [],
+            "self_r_planner": [],
+            "self_n_plan": [],
+            "self_n_actions": [],
+            "self_n_exec": [],
             "final_score": [],
         }
 
@@ -105,7 +106,6 @@ class RewardManager():
                     final_format_score=self.final_format_score,
                     retrieval_score=self.retrieval_score,
                     format_score=self.format_score,
-                    path_reward_weight=self.path_reward_weight,
                     path_match_strategy=self.path_match_strategy,
                 )
                 score = components["final_score"]
@@ -115,12 +115,14 @@ class RewardManager():
                                          final_format_score=self.final_format_score,
                                          retrieval_score=self.retrieval_score,
                                          format_score=self.format_score,
-                                         path_reward_weight=self.path_reward_weight,
                                          path_match_strategy=self.path_match_strategy)
                 components = {
                     "base_score": score,
                     "self_consistency": 0.0,
-                    "path_bonus": 0.0,
+                    "self_r_planner": 0.0,
+                    "self_n_plan": 0.0,
+                    "self_n_actions": 0.0,
+                    "self_n_exec": 0.0,
                     "final_score": score,
                 }
 
@@ -140,14 +142,12 @@ class RewardManager():
 
 
 def _reward_manager_kwargs(config):
-    path_reward_weight = getattr(config.reward_model, "path_reward_weight", 0.)
     path_match_strategy = getattr(config.reward_model, "path_match_strategy", "lexical")
     qa_em_format.validate_path_match_strategy(path_match_strategy)
     return {
         "structure_format_score": config.reward_model.structure_format_score,
         "final_format_score": config.reward_model.final_format_score,
         "retrieval_score": config.reward_model.retrieval_score,
-        "path_reward_weight": path_reward_weight,
         "path_match_strategy": path_match_strategy,
     }
 

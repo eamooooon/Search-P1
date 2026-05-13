@@ -19,8 +19,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 _STEP_LINE_PATTERN = re.compile(
-    r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)",
-    re.DOTALL | re.IGNORECASE,
+    r"^\s*Step\s+(\d+)\s*:\s*Search\s+(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 _TAG_PATTERN = re.compile(r"</?[^>]+>")
 _URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -101,12 +101,13 @@ def extract_plan_steps(text):
     if not match:
         return []
     plan_text = match.group(1)
-    steps = re.findall(_STEP_LINE_PATTERN, plan_text)
+    steps = [match.group(2).strip() for match in _STEP_LINE_PATTERN.finditer(plan_text)]
     return [step.strip() for step in steps if step.strip()]
 
 
 def extract_tool_calls(text):
     content = _extract_assistant_content(text)
+    content = re.sub(r"<tool_response>.*?</tool_response>", "", content, flags=re.DOTALL)
     matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
     return [match.strip() for match in matches]
 
@@ -121,6 +122,35 @@ def count_actions(text):
 
 def validate_planner_steps(steps):
     return bool(steps) and all(step and not _TAG_PATTERN.search(step) for step in steps)
+
+
+def _extract_plan_text(text):
+    content = _extract_assistant_content(text)
+    match = re.search(r"<plan>(.*?)</plan>", content, re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def _has_single_front_loaded_plan(text):
+    content = _extract_assistant_content(text)
+    if len(re.findall(r"<plan>", content)) != 1 or len(re.findall(r"</plan>", content)) != 1:
+        return False
+    return bool(re.match(r"^\s*<plan>.*?</plan>", content, re.DOTALL))
+
+
+def validate_planner_block(text, steps=None):
+    if steps is None:
+        steps = extract_plan_steps(text)
+    if not _has_single_front_loaded_plan(text) or not validate_planner_steps(steps):
+        return False
+
+    plan_text = _extract_plan_text(text)
+    nonempty_lines = [line for line in plan_text.splitlines() if line.strip()]
+    step_matches = list(_STEP_LINE_PATTERN.finditer(plan_text))
+    if len(nonempty_lines) != len(step_matches):
+        return False
+
+    step_numbers = [int(match.group(1)) for match in step_matches]
+    return step_numbers == list(range(1, len(step_numbers) + 1))
 
 
 def validate_actions(actions):
@@ -179,18 +209,35 @@ def count_covered_steps(steps, actions, match_strategy="lexical"):
 
 
 def compute_self_consistency_score(solution_str, match_strategy="lexical"):
+    return compute_self_consistency_components(
+        solution_str,
+        match_strategy=match_strategy,
+    )["self_consistency"]
+
+
+def compute_self_consistency_components(solution_str, match_strategy="lexical"):
     validate_path_match_strategy(match_strategy)
     steps = extract_plan_steps(solution_str)
     actions = extract_tool_calls(solution_str)
-    r_planner = 1.0 if validate_planner_steps(steps) else 0.0
+    r_planner = 1.0 if validate_planner_block(solution_str, steps) else 0.0
     n_plan = len(steps)
     n_actions = len(actions)
+    n_exec_self = 0
 
-    if r_planner == 0 or n_plan == 0 or n_actions == 0 or not validate_actions(actions):
-        return 0.0
+    if r_planner != 0 and n_plan > 0 and n_actions > 0 and validate_actions(actions):
+        n_exec_self = count_covered_steps(steps, actions, match_strategy=match_strategy)
 
-    n_exec_self = count_covered_steps(steps, actions, match_strategy=match_strategy)
-    return r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
+    self_consistency = 0.0
+    if r_planner != 0 and n_plan > 0 and n_actions > 0:
+        self_consistency = r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
+
+    return {
+        "self_consistency": self_consistency,
+        "self_r_planner": r_planner,
+        "self_n_plan": n_plan,
+        "self_n_actions": n_actions,
+        "self_n_exec": n_exec_self,
+    }
 
 
 def is_valid_search_query(query):
@@ -330,7 +377,6 @@ def compute_score_em(solution_str,
                      retrieval_score=0,
                      format_score=0,
                      score=1.,
-                     path_reward_weight=0.,
                      path_match_strategy="lexical"):
     """The scoring function for exact match (EM).
 
@@ -350,7 +396,6 @@ def compute_score_em(solution_str,
         retrieval_score=retrieval_score,
         format_score=format_score,
         score=score,
-        path_reward_weight=path_reward_weight,
         path_match_strategy=path_match_strategy,
     )["final_score"]
 
@@ -363,7 +408,6 @@ def compute_score_components(solution_str,
                              retrieval_score=0,
                              format_score=0,
                              score=1.,
-                             path_reward_weight=0.,
                              path_match_strategy="lexical"):
     validate_path_match_strategy(path_match_strategy)
     is_valid_format, _ = is_valid_sequence(solution_str)
@@ -400,13 +444,14 @@ def compute_score_components(solution_str,
         else:
             base_score = final_format_score # 0.1
 
-    self_consistency = compute_self_consistency_score(solution_str, match_strategy=path_match_strategy)
-    path_bonus = path_reward_weight * self_consistency
-    final_score = base_score + path_bonus
+    self_components = compute_self_consistency_components(
+        solution_str,
+        match_strategy=path_match_strategy,
+    )
+    final_score = base_score
 
     return {
         "base_score": base_score,
-        "self_consistency": self_consistency,
-        "path_bonus": path_bonus,
         "final_score": final_score,
+        **self_components,
     }

@@ -177,7 +177,15 @@ def _compute_response_info(batch):
     )
 
 
-REWARD_COMPONENT_KEYS = ("base_score", "self_consistency", "path_bonus", "final_score")
+REWARD_COMPONENT_KEYS = (
+    "base_score",
+    "self_consistency",
+    "self_r_planner",
+    "self_n_plan",
+    "self_n_actions",
+    "self_n_exec",
+    "final_score",
+)
 VALID_ACTION_REASON_KEYS = {"valid_search", "valid_answer", "valid_plan", "inactive"}
 INVALID_ACTION_REASON_KEYS = {
     "missing_plan",
