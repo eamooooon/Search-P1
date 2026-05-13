@@ -23,10 +23,24 @@ class GenerationConfig:
     topk: int = 3
 
 class LLMGenerationManager:
+    CONTROL_OBSERVATION_REASONS = {
+        "valid_plan",
+        "missing_plan",
+        "duplicate_plan",
+        "missing_or_invalid_plan_steps",
+        "action_before_plan",
+        "missing_reasoning",
+        "invalid_tool_call",
+        "missing_action_tag",
+        "empty_prediction",
+        "malformed_action_tag",
+        "unknown_invalid",
+    }
+
     PLAN_ACCEPTED_OBSERVATION = (
-        "\nPlan accepted. Do not output <plan> again. Now output exactly one "
-        "<reasoning>...</reasoning> followed by one <tool_call>...</tool_call> "
-        "or <answer>...</answer>.\n"
+        "\nPlan accepted. Do not output a plan block again. Now output exactly "
+        "one reasoning block followed by one tool_call block for search or one "
+        "answer block. Close the final block with </tool_call> or </answer>.\n"
     )
 
     def __init__(
@@ -290,9 +304,13 @@ class LLMGenerationManager:
             valid_search_stats += torch.tensor(is_search, dtype=torch.int)
 
             next_obs_ids = self._process_next_obs(next_obs)
-            next_obs_ids_for_final = self._mask_plan_only_observations_for_final_trajectory(
+            control_observation_mask = self._control_observation_mask_from_reasons(
+                action_reasons,
+                active_mask,
+            )
+            next_obs_ids_for_final = self._mask_control_observations_for_final_trajectory(
                 next_obs_ids,
-                plan_only_mask,
+                control_observation_mask,
             )
             
             # Update states
@@ -415,7 +433,7 @@ class LLMGenerationManager:
         if prediction[:plan_matches[0].start()].strip():
             return False
         if re.search(
-            r"</?(?:reasoning|tool_call|tool_response|answer|search|think|information)\b",
+            r"</?(?:reasoning|tool_call|tool_response|answer|query|search|think|information)\b",
             plan_matches[0].group(1),
         ):
             return False
@@ -440,7 +458,7 @@ class LLMGenerationManager:
             return False
         post_plan = prediction[plan_match.end():]
         if re.search(
-            r"</?(?:plan|tool_call|tool_response|answer|search|think|information)\b",
+            r"</?(?:plan|tool_call|tool_response|answer|query|search|think|information)\b",
             post_plan,
             re.DOTALL,
         ):
@@ -451,6 +469,12 @@ class LLMGenerationManager:
     def _plan_only_mask_from_reasons(self, reasons: List[str], active_mask) -> List[bool]:
         return [
             reason == "valid_plan" and self._mask_value_to_bool(active)
+            for reason, active in zip(reasons, active_mask)
+        ]
+
+    def _control_observation_mask_from_reasons(self, reasons: List[str], active_mask) -> List[bool]:
+        return [
+            reason in self.CONTROL_OBSERVATION_REASONS and self._mask_value_to_bool(active)
             for reason, active in zip(reasons, active_mask)
         ]
 
@@ -486,12 +510,22 @@ class LLMGenerationManager:
         next_obs_ids: torch.Tensor,
         plan_only_mask: List[bool],
     ) -> torch.Tensor:
-        if not any(plan_only_mask):
+        return self._mask_control_observations_for_final_trajectory(
+            next_obs_ids,
+            plan_only_mask,
+        )
+
+    def _mask_control_observations_for_final_trajectory(
+        self,
+        next_obs_ids: torch.Tensor,
+        control_observation_mask: List[bool],
+    ) -> torch.Tensor:
+        if not any(control_observation_mask):
             return next_obs_ids
 
         final_next_obs_ids = next_obs_ids.clone()
-        for row_idx, is_plan_only in enumerate(plan_only_mask):
-            if is_plan_only:
+        for row_idx, is_control_observation in enumerate(control_observation_mask):
+            if is_control_observation:
                 final_next_obs_ids[row_idx].fill_(self.tokenizer.pad_token_id)
         return final_next_obs_ids
 
@@ -618,7 +652,7 @@ class LLMGenerationManager:
             pre_action_text = prediction[plan_matches[0].end():match.start()]
 
         if not re.search(r"<reasoning>.*?</reasoning>", pre_action_text, re.DOTALL):
-            if re.search(r"</?(?:search|think|information)\b", pre_action_text, re.DOTALL):
+            if re.search(r"</?(?:query|search|think|information)\b", pre_action_text, re.DOTALL):
                 return "malformed_action_tag"
             return "missing_reasoning"
         return "unknown_invalid"
@@ -629,7 +663,7 @@ class LLMGenerationManager:
         if has_planned and re.search(r"</?plan>", prediction):
             return "duplicate_plan"
         if re.search(
-            r"</?(tool_call|answer|search|think|information)\b[^>]*>",
+            r"</?(tool_call|answer|query|search|think|information)\b[^>]*>",
             prediction,
             re.DOTALL,
         ):
@@ -639,25 +673,26 @@ class LLMGenerationManager:
     def _invalid_action_observation(self, has_planned: bool, reason: str) -> str:
         if has_planned:
             base = (
-                "My previous action is invalid. A valid <plan> has already been accepted. "
-                "Do not output <plan> again. Output exactly one "
-                "<reasoning>...</reasoning> block followed by exactly one "
-                "<tool_call>...</tool_call> or <answer>...</answer> block."
+                "My previous action is invalid. A valid plan block has already been accepted. "
+                "Do not output a plan block again. Output exactly one reasoning block followed "
+                "by exactly one tool_call block or answer block. Close the final block with "
+                "</tool_call> or </answer>."
             )
         else:
             base = (
-                "My previous action is invalid. No valid <plan> has been accepted yet. "
-                "First output one complete <plan>...</plan> with numbered Search steps, "
-                "then output one <reasoning>...</reasoning> block followed by one "
-                "<tool_call>...</tool_call> or <answer>...</answer> block."
+                "My previous action is invalid. No valid plan block has been accepted yet. "
+                "First output one complete plan block with numbered Search steps, then output "
+                "one reasoning block followed by one tool_call block or answer block. Use the "
+                "<plan>, <reasoning>, <tool_call>, and <answer> tag names, and close the final "
+                "block with </tool_call> or </answer>."
             )
 
         extra = ""
         if reason == "malformed_action_tag":
             extra = (
-                " Old <search>, <think>, and <information> tags are deprecated; "
-                "the trajectory vocabulary is <reasoning>, <tool_call>, and "
-                "<tool_response>."
+                " Do not use query, search, think, or information tags. Use a tool_call "
+                "block for search; the trajectory vocabulary is plan, reasoning, "
+                "tool_call, tool_response, and answer."
             )
         elif reason == "missing_action_tag":
             extra = (
