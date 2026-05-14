@@ -220,3 +220,22 @@
   - 运行 `git diff --check` 检查空白和补丁格式。
 - 后续观察：
   - 短训练完成后，用 analysis 脚本加 `--bucket-size 100` 查看 planner valid rate、self-consistency 和失败归因是否随 step 呈改善趋势。
+
+## 2026-05-15 - 30-step warm-up 与 final validation 限流
+
+- 现象：
+  - v4 10-step 诊断证明后 1000 条 dump 是 final validation，不是训练过程崩溃。
+  - `no_actions` 在 10 step 内没有呈现单调下降趋势，无法确认是否只是 warm-up 不足。
+- 根因：
+  - 10 step 观察窗口偏短，模型可能还没有获得足够格式探索机会。
+  - final validation 默认全量运行，诊断 run 结束后会花很久跑验证并写入大量 val 样本。
+- 调整：
+  - 将诊断 run 扩展为 30 step，`data.train_data_num=11520`，`trainer.total_training_steps=30`。
+  - 将 dump 路径改为 `logs/$EXPERIMENT_NAME-tracka-v5-30steps.jsonl`，`trajectory_dump_limit=3000`，保留更长训练窗口。
+  - 设置 `data.val_data_num=1000`，限制 final validation 规模，避免全量验证过久。
+  - 继续保留 `val_before_train=false` 与 `save_freq` / `test_freq=999999`，避免训练前验证和中途 checkpoint / test 干扰诊断。
+- 验证：
+  - 运行 `bash -n scripts/nq_hotpotqa_p1/train_grpo.sh` 检查脚本语法。
+  - 运行 `git diff --check` 检查空白和补丁格式。
+- 后续观察：
+  - v5 完成后优先分析 train split，并使用 `--limit 3000 --bucket-size 100` 观察 `no_actions`、planner valid rate、self-consistency 和失败归因是否随训练 step 改善。
