@@ -34,6 +34,9 @@ class LLMGenerationManager:
         "missing_action_tag",
         "empty_prediction",
         "malformed_action_tag",
+        "malformed_query_tag",
+        "malformed_legacy_tag",
+        "malformed_tool_call_content",
         "unknown_invalid",
     }
 
@@ -433,7 +436,7 @@ class LLMGenerationManager:
         if prediction[:plan_matches[0].start()].strip():
             return False
         if re.search(
-            r"</?(?:reasoning|tool_call|tool_response|answer|query|search|think|information)\b",
+            r"</?(?:reasoning|tool_call|tool_response|answer|query|tool_query|search|think|information)\b",
             plan_matches[0].group(1),
         ):
             return False
@@ -458,7 +461,7 @@ class LLMGenerationManager:
             return False
         post_plan = prediction[plan_match.end():]
         if re.search(
-            r"</?(?:plan|tool_call|tool_response|answer|query|search|think|information)\b",
+            r"</?(?:plan|tool_call|tool_response|answer|query|tool_query|search|think|information)\b",
             post_plan,
             re.DOTALL,
         ):
@@ -562,15 +565,30 @@ class LLMGenerationManager:
         return self._has_single_reasoning_block(pre_action_text)
 
     def _is_valid_search_query(self, query: str) -> bool:
-        if not query or not query.strip():
-            return False
+        return self._tool_call_content_invalid_reason(query) is None
+
+    def _tool_call_content_invalid_reason(self, query: str) -> Optional[str]:
+        query = query.strip() if query else ""
+        if not query:
+            return "invalid_tool_call"
         if re.search(r"</?[^>]+>", query):
-            return False
+            return "malformed_tool_call_content"
+        if re.search(
+            r"\btool_call\s*:\s*search\b|\bsearch\s*\(|\btool_response\s*:|"
+            r"^\s*(?:query|search)\s*:?\s+",
+            query,
+            re.IGNORECASE,
+        ):
+            return "malformed_tool_call_content"
+        if (query.startswith("{") and query.endswith("}")) or (
+            query.startswith("[") and query.endswith("]")
+        ):
+            return "malformed_tool_call_content"
         if re.search(r"https?://|www\.", query, re.IGNORECASE):
-            return False
+            return "invalid_tool_call"
         if len(query.split()) > 32:
-            return False
-        return True
+            return "invalid_tool_call"
+        return None
 
     def _rollout_debug_sample_limit(self) -> int:
         raw_limit = os.environ.get("SEARCH_P1_ROLLOUT_DEBUG_SAMPLES", "0")
@@ -633,6 +651,21 @@ class LLMGenerationManager:
             return "duplicate_plan"
         return "missing_or_invalid_plan_steps"
 
+    def _malformed_action_tag_reason(self, prediction: str) -> str:
+        if re.search(
+            r"</?(?:query|tool_query)\b[^>]*>|(?:^|\s)/query\b",
+            prediction,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            return "malformed_query_tag"
+        if re.search(
+            r"</?(?:search|think|information)\b[^>]*>",
+            prediction,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            return "malformed_legacy_tag"
+        return "malformed_action_tag"
+
     def _invalid_action_context_reason(
         self,
         prediction: str,
@@ -652,8 +685,9 @@ class LLMGenerationManager:
             pre_action_text = prediction[plan_matches[0].end():match.start()]
 
         if not re.search(r"<reasoning>.*?</reasoning>", pre_action_text, re.DOTALL):
-            if re.search(r"</?(?:query|search|think|information)\b", pre_action_text, re.DOTALL):
-                return "malformed_action_tag"
+            malformed_reason = self._malformed_action_tag_reason(pre_action_text)
+            if malformed_reason != "malformed_action_tag":
+                return malformed_reason
             return "missing_reasoning"
         return "unknown_invalid"
 
@@ -663,11 +697,13 @@ class LLMGenerationManager:
         if has_planned and re.search(r"</?plan>", prediction):
             return "duplicate_plan"
         if re.search(
-            r"</?(tool_call|answer|query|search|think|information)\b[^>]*>",
+            r"</?(tool_call|answer|query|tool_query|search|think|information)\b[^>]*>",
             prediction,
             re.DOTALL,
         ):
-            return "malformed_action_tag"
+            return self._malformed_action_tag_reason(prediction)
+        if re.search(r"(?:^|\s)/query\b", prediction, re.DOTALL | re.IGNORECASE):
+            return "malformed_query_tag"
         return "missing_action_tag"
 
     def _invalid_action_observation(self, has_planned: bool, reason: str) -> str:
@@ -693,6 +729,21 @@ class LLMGenerationManager:
                 " Do not use query, search, think, or information tags. Use a tool_call "
                 "block for search; the trajectory vocabulary is plan, reasoning, "
                 "tool_call, tool_response, and answer."
+            )
+        elif reason == "malformed_query_tag":
+            extra = (
+                " Query-style tags and slash query commands are invalid. Use only the "
+                "current Search-P1 tool_call action name for search."
+            )
+        elif reason == "malformed_legacy_tag":
+            extra = (
+                " Legacy search, think, and information tags are invalid in Search-P1. "
+                "Use the current reasoning, tool_call, tool_response, and answer names."
+            )
+        elif reason == "malformed_tool_call_content":
+            extra = (
+                " The search action content must be only the plain search query, with "
+                "no nested tags, tool names, search function syntax, JSON, or response text."
             )
         elif reason == "missing_action_tag":
             extra = (
@@ -866,11 +917,14 @@ class LLMGenerationManager:
                         reason = self._invalid_action_context_reason(prediction, match, has_planned)
                         content = ''
                         action = None
-                    elif action == 'search' and not self._is_valid_search_query(content):
-                        if active:
-                            reason = "invalid_tool_call"
-                        content = ''
-                        action = None
+                    elif action == 'search':
+                        invalid_tool_call_reason = self._tool_call_content_invalid_reason(content)
+                        if not invalid_tool_call_reason:
+                            reason = f"valid_{action}"
+                        elif active:
+                            reason = invalid_tool_call_reason
+                            content = ''
+                            action = None
                     elif active:
                         reason = f"valid_{action}"
                 else:

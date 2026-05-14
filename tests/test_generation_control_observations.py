@@ -55,7 +55,7 @@ def test_control_observations_are_masked_but_tool_response_is_kept():
         return_reasons=True,
     )
 
-    assert reasons == ["valid_search", "valid_plan", "malformed_action_tag"]
+    assert reasons == ["valid_search", "valid_plan", "malformed_query_tag"]
     assert is_search == [1, 0, 0]
     assert "<tool_response>Doc for France capital</tool_response>" in next_obs[0]
     assert "Plan accepted." in next_obs[1]
@@ -77,19 +77,100 @@ def test_control_observations_are_masked_but_tool_response_is_kept():
     assert masked[2].tolist() == [0, 0, 0, 0]
 
 
-def test_query_tag_stays_invalid_and_is_reported_as_malformed_action_tag():
+def test_query_formats_stay_invalid_and_are_reported_as_malformed_query_tag():
     manager = make_manager()
 
     actions, contents, reasons = manager.postprocess_predictions(
-        ["<reasoning>Old format.</reasoning><query>France capital</query>"],
+        [
+            "<reasoning>Old format.</reasoning><query>France capital</query>",
+            "<reasoning>Old format.</reasoning><tool_query>France capital</tool_query>",
+            "/query France capital",
+        ],
+        planner_seen=[True, True, True],
+        active_mask=[True, True, True],
+        return_reasons=True,
+    )
+
+    assert actions == [None, None, None]
+    assert contents == ["", "", ""]
+    assert reasons == [
+        "malformed_query_tag",
+        "malformed_query_tag",
+        "malformed_query_tag",
+    ]
+
+
+def test_legacy_tags_are_reported_as_malformed_legacy_tag():
+    manager = make_manager()
+
+    actions, contents, reasons = manager.postprocess_predictions(
+        [
+            "<reasoning>Old format.</reasoning><search>France capital</search>",
+            "<think>Need evidence.</think>",
+            "<information>Doc text.</information>",
+        ],
+        planner_seen=[True, True, True],
+        active_mask=[True, True, True],
+        return_reasons=True,
+    )
+
+    assert actions == [None, None, None]
+    assert contents == ["", "", ""]
+    assert reasons == [
+        "malformed_legacy_tag",
+        "malformed_legacy_tag",
+        "malformed_legacy_tag",
+    ]
+
+
+def test_malformed_tool_call_content_is_reported_separately():
+    manager = make_manager()
+
+    actions, contents, reasons = manager.postprocess_predictions(
+        [
+            "<reasoning>Need evidence.</reasoning>"
+            "<tool_call>tool_call: search(France capital)</tool_call>",
+            "<reasoning>Need evidence.</reasoning>"
+            "<tool_call>tool_response: Doc text</tool_call>",
+        ],
+        planner_seen=[True, True],
+        active_mask=[True, True],
+        return_reasons=True,
+    )
+
+    assert actions == [None, None]
+    assert contents == ["", ""]
+    assert reasons == [
+        "malformed_tool_call_content",
+        "malformed_tool_call_content",
+    ]
+
+
+def test_plain_tool_call_query_is_valid_search():
+    manager = make_manager()
+
+    actions, contents, reasons = manager.postprocess_predictions(
+        ["<reasoning>Need evidence.</reasoning><tool_call>Albert Einstein birthplace</tool_call>"],
         planner_seen=[True],
         active_mask=[True],
         return_reasons=True,
     )
 
-    assert actions == [None]
-    assert contents == [""]
-    assert reasons == ["malformed_action_tag"]
+    assert actions == ["search"]
+    assert contents == ["Albert Einstein birthplace"]
+    assert reasons == ["valid_search"]
+
+
+def test_trainer_action_reason_allowlist_includes_malformed_buckets():
+    with open("verl/trainer/ppo/ray_trainer.py", encoding="utf-8") as trainer_file:
+        trainer_source = trainer_file.read()
+
+    for reason in [
+        "malformed_query_tag",
+        "malformed_legacy_tag",
+        "malformed_tool_call_content",
+    ]:
+        assert reason in trainer_source
 
 
 def test_feedback_avoids_full_xml_pair_examples():

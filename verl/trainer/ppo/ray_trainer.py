@@ -197,6 +197,9 @@ INVALID_ACTION_REASON_KEYS = {
     "missing_action_tag",
     "empty_prediction",
     "malformed_action_tag",
+    "malformed_query_tag",
+    "malformed_legacy_tag",
+    "malformed_tool_call_content",
     "unknown_invalid",
 }
 ACTION_REASON_KEYS = VALID_ACTION_REASON_KEYS | INVALID_ACTION_REASON_KEYS
