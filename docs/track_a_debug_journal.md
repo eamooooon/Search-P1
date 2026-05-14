@@ -186,3 +186,37 @@
   - 运行相关 Track A / trajectory / generation 测试与 `py_compile`、`git diff --check`。
 - 后续观察：
   - 重新生成训练 parquet 或确认数据生成流程会重跑这些 scripts 后，再跑同规模 dump，对比 planner valid rate、self-consistency mean 和 malformed reason 分布。
+
+## 2026-05-14 - v3 append dump 与 warm-up 趋势验证
+
+- 现象：
+  - `logs/...tracka-v3.jsonl` 是 append 文件，总计约 600 条；前 400 条混入旧 run，最后 200 条才对应新 prompt。
+  - 直接分析整文件会把旧 prompt 的失败分布混进新 prompt 结果，导致 planner valid rate / self-consistency 判断被稀释或误导。
+- 根因：
+  - trajectory dump 采用追加写入，同一路径复用时不会自动截断历史 run。
+  - v3 的有效观察窗口应限定到最后 200 条，而不是整文件 600 条。
+- 调整：
+  - 最后 200 条确认新 prompt 已生效，应作为 v3 prompt 修复后的主要分析样本。
+  - 为验证“训练初始 step 是否需要 warm-up 才稳定格式”的假设，analysis 脚本新增 `--tail` 读取 append 文件尾部样本，并新增 `--bucket-size` 输出按时间顺序的 bucket trend。
+- 验证：
+  - 后续分析 v3 / v4 / v5 时优先使用 `--tail 200` 隔离当前 run，再用 bucket trend 观察每桶 planner_valid_rate、self_consistency、complete / no_actions / invalid_planner / partial_plan_coverage / unmatched_actions / redundant_actions 是否随时间改善。
+- 后续观察：
+  - v4 / v5 dump 继续按桶对比早期和后期样本；如果后期 bucket 明显改善，说明 warm-up 假设有支持，否则应继续排查 prompt、rollout feedback 或 reward parser 边界。
+
+## 2026-05-14 - warm-up 10-step 诊断短跑
+
+- 现象：
+  - 需要验证 Track A 格式是否会随着训练 step warm-up 逐步变稳。
+  - 现有较短 dump 容易混入 val-before-train、save/test 周期或 append 历史样本干扰，难以只看训练初期趋势。
+- 根因：
+  - 如果训练刚开始的格式不稳定来自 warm-up，单看前几百条混合样本无法判断后续 bucket 是否改善。
+  - 诊断 run 需要固定训练步数、独立 dump 路径和足够样本上限，避免与 checkpoint / test / val-before-train 行为混杂。
+- 调整：
+  - 将 GRPO 脚本改为 10-step 短跑，`data.train_data_num=3840`，并显式设置 `trainer.total_training_steps=10`。
+  - 禁用 `val_before_train`，把 `save_freq` / `test_freq` 调大到 `999999`，减少诊断过程干扰。
+  - 独立 dump 到 `logs/$EXPERIMENT_NAME-tracka-v4-10steps.jsonl`，并把 `trajectory_dump_limit` 提高到 `1000`。
+- 验证：
+  - 运行 `bash -n scripts/nq_hotpotqa_p1/train_grpo.sh` 检查脚本语法。
+  - 运行 `git diff --check` 检查空白和补丁格式。
+- 后续观察：
+  - 短训练完成后，用 analysis 脚本加 `--bucket-size 100` 查看 planner valid rate、self-consistency 和失败归因是否随 step 呈改善趋势。

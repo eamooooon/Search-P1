@@ -1,12 +1,21 @@
 import argparse
 import json
 import sys
-from collections import Counter
+from collections import Counter, deque
 from importlib import util
 from pathlib import Path
 from statistics import mean
 from typing import Optional
 
+
+FAILURE_REASONS = (
+    "complete",
+    "no_actions",
+    "invalid_planner",
+    "partial_plan_coverage",
+    "unmatched_actions",
+    "redundant_actions",
+)
 
 TRACK_A_KEYS = (
     "self_consistency",
@@ -25,7 +34,24 @@ def load_reward_module(repo_root: Path):
     return module
 
 
-def iter_jsonl(path: Path, limit: Optional[int] = None):
+def iter_jsonl(path: Path, limit: Optional[int] = None, tail: Optional[int] = None):
+    if limit is not None and tail is not None:
+        raise ValueError("--limit and --tail are mutually exclusive")
+
+    if tail is not None:
+        rows = deque(maxlen=tail)
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if stripped:
+                    rows.append((line_number, stripped))
+        for line_number, stripped in rows:
+            try:
+                yield line_number, json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{line_number}: invalid JSONL row: {exc}") from exc
+        return
+
     count = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -171,11 +197,69 @@ def summarize(records: list[dict], failure_counts: Counter):
     summary["planner_valid_rate"] = summary["self_r_planner"]["mean"]
     summary["mean_plan_coverage"] = mean(plan_coverage) if plan_coverage else 0.0
     summary["mean_action_efficiency"] = mean(action_efficiency) if action_efficiency else 0.0
-    summary["failure_counts"] = dict(failure_counts)
+    summary["failure_counts"] = {reason: failure_counts.get(reason, 0) for reason in FAILURE_REASONS}
     return summary
 
 
-def print_summary(summary: dict, low_samples: list[dict], missing_solution: int, max_chars: int):
+def bucket_failure_counts(records: list[dict]):
+    counts = Counter(record["reason"] for record in records)
+    return {reason: counts.get(reason, 0) for reason in FAILURE_REASONS}
+
+
+def build_buckets(records: list[dict], bucket_size: Optional[int]):
+    if bucket_size is None:
+        return []
+
+    buckets = []
+    for start in range(0, len(records), bucket_size):
+        bucket_records = records[start : start + bucket_size]
+        if not bucket_records:
+            continue
+        failure_counts = Counter(record["reason"] for record in bucket_records)
+        summary = summarize(bucket_records, failure_counts)
+        buckets.append(
+            {
+                "index": len(buckets),
+                "source_range": {
+                    "start": bucket_records[0]["source"],
+                    "end": bucket_records[-1]["source"],
+                },
+                "samples": summary["samples"],
+                "planner_valid_rate": summary["planner_valid_rate"],
+                "self_consistency_mean": summary["self_consistency"]["mean"],
+                "failure_counts": bucket_failure_counts(bucket_records),
+            }
+        )
+    return buckets
+
+
+def print_buckets(buckets: list[dict]):
+    print("")
+    print("Buckets / Trend:")
+    if not buckets:
+        print("  disabled")
+        return
+
+    for bucket in buckets:
+        counts = bucket["failure_counts"]
+        count_text = " ".join(f"{reason}={counts[reason]}" for reason in FAILURE_REASONS)
+        source_range = bucket["source_range"]
+        print(
+            f"  bucket={bucket['index']} source={source_range['start']}..{source_range['end']} "
+            f"samples={bucket['samples']} "
+            f"planner_valid_rate={bucket['planner_valid_rate']:.4f} "
+            f"self_consistency_mean={bucket['self_consistency_mean']:.4f} "
+            f"{count_text}"
+        )
+
+
+def print_summary(
+    summary: dict,
+    low_samples: list[dict],
+    missing_solution: int,
+    max_chars: int,
+    buckets: list[dict],
+):
     print(f"Samples: {summary['samples']}")
     if missing_solution:
         print(f"Skipped rows without solution text: {missing_solution}")
@@ -195,6 +279,8 @@ def print_summary(summary: dict, low_samples: list[dict], missing_solution: int,
     for reason, count in sorted(summary["failure_counts"].items()):
         print(f"  {reason}: {count}")
 
+    print_buckets(buckets)
+
     if low_samples:
         print("")
         print("Low-score samples:")
@@ -208,12 +294,22 @@ def print_summary(summary: dict, low_samples: list[dict], missing_solution: int,
             print(f"    {snippet(sample['solution_str'], max_chars)}")
 
 
+def positive_int(value: str):
+    integer = int(value)
+    if integer <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return integer
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Analyze Track A Self-Consistency metrics from JSONL trajectories.",
     )
     parser.add_argument("jsonl", nargs="+", type=Path, help="Input JSONL file(s).")
-    parser.add_argument("--limit", type=int, default=None, help="Maximum non-empty rows per input file.")
+    row_group = parser.add_mutually_exclusive_group()
+    row_group.add_argument("--limit", type=positive_int, default=None, help="Maximum non-empty rows per input file.")
+    row_group.add_argument("--tail", type=positive_int, default=None, help="Read only the last N non-empty JSONL rows per input file.")
+    parser.add_argument("--bucket-size", type=positive_int, default=None, help="Group analyzed records into ordered buckets of N rows.")
     parser.add_argument("--match-strategy", default="lexical", help="Path match strategy. Currently only lexical is supported.")
     parser.add_argument("--low-score-threshold", type=float, default=0.5, help="Threshold for printing low-score samples.")
     parser.add_argument("--sample-size", type=int, default=5, help="Maximum low-score samples to print.")
@@ -230,7 +326,7 @@ def main(argv=None):
 
     rows = []
     for path in args.jsonl:
-        for line_number, row in iter_jsonl(path, limit=args.limit):
+        for line_number, row in iter_jsonl(path, limit=args.limit, tail=args.tail):
             rows.append((f"{path}:{line_number}", row))
 
     records, failure_counts, low_samples, missing_solution = analyze_rows(
@@ -241,11 +337,12 @@ def main(argv=None):
         sample_size=args.sample_size,
     )
     summary = summarize(records, failure_counts)
+    buckets = build_buckets(records, args.bucket_size)
 
     if args.json:
-        print(json.dumps({"summary": summary, "missing_solution": missing_solution}, ensure_ascii=False, indent=2))
+        print(json.dumps({"summary": summary, "buckets": buckets, "missing_solution": missing_solution}, ensure_ascii=False, indent=2))
     else:
-        print_summary(summary, low_samples, missing_solution, max_chars=args.snippet_chars)
+        print_summary(summary, low_samples, missing_solution, max_chars=args.snippet_chars, buckets=buckets)
 
     return 0 if records else 1
 
