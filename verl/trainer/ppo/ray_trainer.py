@@ -179,6 +179,9 @@ def _compute_response_info(batch):
 
 REWARD_COMPONENT_KEYS = (
     "base_score",
+    "has_search",
+    "effective_structure_format",
+    "effective_retrieval",
     "self_consistency",
     "self_r_planner",
     "self_n_plan",

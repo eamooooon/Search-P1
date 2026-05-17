@@ -45,6 +45,7 @@ class RewardManager():
                  retrieval_score=0.,
                  format_score=0.,
                  path_match_strategy="lexical",
+                 require_search_for_format=False,
                  trajectory_dump_path=None,
                  trajectory_dump_limit=0,
                  trajectory_dump_split=None) -> None:
@@ -56,6 +57,7 @@ class RewardManager():
         self.final_format_score = final_format_score
         self.retrieval_score = retrieval_score
         self.path_match_strategy = path_match_strategy
+        self.require_search_for_format = require_search_for_format
         self.trajectory_dump_path = trajectory_dump_path
         self.trajectory_dump_limit = int(trajectory_dump_limit or 0)
         self.trajectory_dump_split = trajectory_dump_split
@@ -93,6 +95,9 @@ class RewardManager():
 
         reward_components = {
             "base_score": [],
+            "has_search": [],
+            "effective_structure_format": [],
+            "effective_retrieval": [],
             "self_consistency": [],
             "self_r_planner": [],
             "self_n_plan": [],
@@ -136,6 +141,7 @@ class RewardManager():
                     retrieval_score=self.retrieval_score,
                     format_score=self.format_score,
                     path_match_strategy=self.path_match_strategy,
+                    require_search_for_format=self.require_search_for_format,
                 )
                 score = components["final_score"]
             else:
@@ -144,9 +150,13 @@ class RewardManager():
                                          final_format_score=self.final_format_score,
                                          retrieval_score=self.retrieval_score,
                                          format_score=self.format_score,
-                                         path_match_strategy=self.path_match_strategy)
+                                         path_match_strategy=self.path_match_strategy,
+                                         require_search_for_format=self.require_search_for_format)
                 components = {
                     "base_score": score,
+                    "has_search": 0.0,
+                    "effective_structure_format": 1.0,
+                    "effective_retrieval": 1.0,
                     "self_consistency": 0.0,
                     "self_r_planner": 0.0,
                     "self_n_plan": 0.0,
@@ -184,6 +194,7 @@ def _reward_manager_kwargs(config):
         "final_format_score": config.reward_model.final_format_score,
         "retrieval_score": config.reward_model.retrieval_score,
         "path_match_strategy": path_match_strategy,
+        "require_search_for_format": getattr(config.reward_model, "require_search_for_format", False),
         "trajectory_dump_path": getattr(config.reward_model, "trajectory_dump_path", None),
         "trajectory_dump_limit": getattr(config.reward_model, "trajectory_dump_limit", 0),
     }

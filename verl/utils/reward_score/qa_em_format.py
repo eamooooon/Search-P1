@@ -120,6 +120,10 @@ def count_actions(text):
     return len(extract_tool_calls(text))
 
 
+def has_legal_tool_call(text):
+    return any(is_valid_search_query(action) for action in extract_tool_calls(text))
+
+
 def validate_planner_steps(steps):
     return bool(steps) and all(step and not _TAG_PATTERN.search(step) for step in steps)
 
@@ -327,7 +331,8 @@ def extract_solution(solution_str):
     """Extract the equation from the solution string."""
 
     assistant_marker = "<|im_start|>assistant"
-    if assistant_marker in solution_str:
+    has_assistant_marker = assistant_marker in solution_str
+    if has_assistant_marker:
         solution_str = solution_str.rsplit(assistant_marker, 1)[1]
         solution_str = solution_str.split("<|im_end|>", 1)[0]
     solution_str = re.sub(
@@ -344,7 +349,7 @@ def extract_solution(solution_str):
     if not matches:
         return None
 
-    if content == solution_str and len(matches) <= 1:
+    if not has_assistant_marker and content == solution_str and len(matches) <= 1:
         return None
     
     # Use the final answer tag when a trajectory contains multiple turns.
@@ -377,7 +382,8 @@ def compute_score_em(solution_str,
                      retrieval_score=0,
                      format_score=0,
                      score=1.,
-                     path_match_strategy="lexical"):
+                     path_match_strategy="lexical",
+                     require_search_for_format=False):
     """The scoring function for exact match (EM).
 
     Args:
@@ -397,6 +403,7 @@ def compute_score_em(solution_str,
         format_score=format_score,
         score=score,
         path_match_strategy=path_match_strategy,
+        require_search_for_format=require_search_for_format,
     )["final_score"]
 
 
@@ -408,11 +415,16 @@ def compute_score_components(solution_str,
                              retrieval_score=0,
                              format_score=0,
                              score=1.,
-                             path_match_strategy="lexical"):
+                             path_match_strategy="lexical",
+                             require_search_for_format=False):
     validate_path_match_strategy(path_match_strategy)
     is_valid_format, _ = is_valid_sequence(solution_str)
+    has_search = has_legal_tool_call(solution_str)
+    format_shaping_allowed = (not require_search_for_format) or has_search
+    effective_structure_format = 1.0 if format_shaping_allowed else 0.0
+    effective_retrieval = 1.0 if format_shaping_allowed else 0.0
     retrieval_correct = False
-    if is_valid_format:
+    if is_valid_format and format_shaping_allowed:
         retrieval_correct = is_retrieval_correct(solution_str, ground_truth['target'])
     answer = extract_solution(solution_str=solution_str)
     logger.debug(
@@ -423,7 +435,7 @@ def compute_score_components(solution_str,
     )
             
     if answer is None:
-        if is_valid_format:
+        if is_valid_format and format_shaping_allowed:
             if retrieval_correct:
                 base_score = structure_format_score + retrieval_score # 0.3
             else:
@@ -436,13 +448,15 @@ def compute_score_components(solution_str,
                 base_score = score # 1
             else:
                 base_score = score - structure_format_score # 0.8
-        elif is_valid_format:
+        elif is_valid_format and format_shaping_allowed:
             if retrieval_correct:
                 base_score = structure_format_score + retrieval_score # 0.3
             else:
                 base_score = structure_format_score # 0.2
-        else:
+        elif format_shaping_allowed:
             base_score = final_format_score # 0.1
+        else:
+            base_score = 0
 
     self_components = compute_self_consistency_components(
         solution_str,
@@ -452,6 +466,9 @@ def compute_score_components(solution_str,
 
     return {
         "base_score": base_score,
+        "has_search": has_search,
+        "effective_structure_format": effective_structure_format,
+        "effective_retrieval": effective_retrieval,
         "final_score": final_score,
         **self_components,
     }

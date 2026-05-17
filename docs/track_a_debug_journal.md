@@ -239,3 +239,20 @@
   - 运行 `git diff --check` 检查空白和补丁格式。
 - 后续观察：
   - v5 完成后优先分析 train split，并使用 `--limit 3000 --bucket-size 100` 观察 `no_actions`、planner valid rate、self-consistency 和失败归因是否随训练 step 改善。
+
+## 2026-05-17 - require_search_for_format 启用 no-search shortcut 防护
+
+- 现象：
+  - v6 full dump 证明继续增加训练 step 没有解决 `no_actions`，反而出现 invalid planner 坍塌。
+  - 大量样本没有合法 `<tool_call>`，但会伪造 `<tool_response>` 并直接给 `<answer>`，仍可能拿到格式 shaping。
+- 根因：
+  - `require_search_for_format` 只存在于 PRD/spec 设计里，reward scorer 和 P1 GRPO 脚本没有实际透传启用。
+  - no-search / 伪造 tool response 的错误答案仍能通过结构或 final 格式分获得正反馈，形成 shortcut。
+- 调整：
+  - 在 `qa_em_format` 中实现 `require_search_for_format` gate：没有合法 `<tool_call>` 搜索查询时，错误答案或无答案轨迹不能获得 structure / retrieval / final format shaping。
+  - 保留 exact-match outcome 奖励：正确答案仍按原有高分逻辑处理，避免过度惩罚已知答案。
+  - 在 RewardManager、Hydra 默认配置和 P1 GRPO 脚本中透传并启用该开关，同时记录 `has_search`、`effective_structure_format`、`effective_retrieval`。
+- 验证：
+  - 覆盖 no-search 兼容模式、gate 模式、合法 tool call 错误答案、no-search exact match 和组件字段。
+- 后续观察：
+  - 用 v7 dump 观察 `no_actions`、invalid planner、EM 和 format shaping 分布是否改善，重点确认 no-search wrong-answer 不再靠格式分维持。

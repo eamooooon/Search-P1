@@ -70,6 +70,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo_format \
     reward_model.structure_format_score=0.2 \
     reward_model.final_format_score=0.1 \
     reward_model.retrieval_score=0 \
+    reward_model.require_search_for_format=true \
     reward_model.trajectory_dump_path=logs/$EXPERIMENT_NAME-tracka-v5-30steps.jsonl \
     reward_model.trajectory_dump_limit=3000 \
     max_turns=4 \
