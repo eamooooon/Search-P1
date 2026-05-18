@@ -256,3 +256,39 @@
   - 覆盖 no-search 兼容模式、gate 模式、合法 tool call 错误答案、no-search exact match 和组件字段。
 - 后续观察：
   - 用 v7 dump 观察 `no_actions`、invalid planner、EM 和 format shaping 分布是否改善，重点确认 no-search wrong-answer 不再靠格式分维持。
+
+## 2026-05-18 - v8 invalid planner shortcut 收紧
+
+- 现象：
+  - v7 证明 `require_search_for_format=true` 已经压住 no-actions / no-search shortcut。
+  - 但部分 `invalid_planner` / invalid sequence 轨迹因为包含合法 `<tool_call>` 或 `<answer>`，错误答案仍能拿到 `final_format_score=0.1`。
+- 根因：
+  - 上一轮 gate 只要求错误答案拿 format shaping 时有合法 search，没有区分 structural / retrieval shaping 与 final-format shaping。
+  - 对 Search-P1 来说，错误答案想拿任何 format shaping，不仅需要合法 search，还必须满足整体轨迹格式合法。
+- 调整：
+  - 在 `qa_em_format` 中将 `final_format_score` 的 gate 收紧为：`require_search_for_format=true` 时必须同时满足有合法 search 和 `is_valid_format=True`。
+  - 保持 backward compatibility：`require_search_for_format=false` 时，invalid sequence + wrong answer 仍保留旧的 final-format shaping。
+  - 保留 exact-match outcome reward：invalid format 的 EM 正确答案仍按现有 `score - structure_format_score` 逻辑给分。
+- 验证：
+  - 增加 invalid planner + legal `<tool_call>` + wrong `<answer>` 覆盖，确认 false 模式为 `0.1`、true 模式为 `0`。
+  - 继续覆盖 valid Search-P1 + legal search + wrong answer 在 true 模式下保留 `structure_format_score=0.2`。
+- 后续观察：
+  - 用 v8 dump 观察 `invalid_planner` 样本的 `base_score` 分布，重点确认错误答案 invalid-format 轨迹不再靠 `final_format_score` 维持正反馈。
+
+## 2026-05-18 - v8 诊断窗口收窄到 20 step
+
+- 现象：
+  - v8 诊断需要继续观察 `require_search_for_format=true` 和 invalid-format final gate 收紧后的早期训练行为。
+  - 30-step 短跑耗时偏长，而 v6/v7 的关键问题已经在前 10-20 step 内足够显现。
+- 根因：
+  - 当前要验证的是 early stability 和 mid-run shortcut 是否仍然出现，不需要完整保留第 21-30 step 的训练窗口。
+  - 在相同 batch / agent 设置下，20 step 仍覆盖足够多 reward-time trajectory：`data.train_data_num = 384 * 20 = 7680`，`trajectory_dump_limit = 384 * 3 * 20 = 23040`。
+- 调整：
+  - 将 P1 GRPO v8 诊断从 30 step 改为 20 step：`trainer.total_training_steps=20`。
+  - 将 dump 路径改为 `logs/$EXPERIMENT_NAME-tracka-v8-20steps.jsonl`，避免和历史 30-step 文件混用。
+  - 保留 `reward_model.require_search_for_format=true` 和其他 v8 gating 设置。
+- 验证：
+  - 运行 `bash -n scripts/nq_hotpotqa_p1/train_grpo.sh` 检查脚本语法。
+  - 运行 `git diff --check` 检查补丁空白格式。
+- 后续观察：
+  - 优先用 20-step dump 对比前 10-20 step 的 no-search / invalid-format 分布，确认 early stability 和 mid-run shortcut 是否已经可判定，同时省掉后 10 step 时间。

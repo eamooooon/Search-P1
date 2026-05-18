@@ -64,6 +64,20 @@ Step 1: Search Albert Einstein birthplace.
 <answer>wrong</answer>"""
 
 
+INVALID_PLANNER_LEGAL_SEARCH_WRONG_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search Albert Einstein birthplace.
+</plan>
+<plan>
+Step 2: Search duplicate planner.
+</plan>
+<reasoning>I still issue a legal search.</reasoning>
+<tool_call>Albert Einstein birthplace</tool_call>
+<tool_response>Doc 1 says Ulm.</tool_response>
+<reasoning>Now answer incorrectly.</reasoning>
+<answer>wrong</answer>"""
+
+
 def test_self_consistency_perfect_match_records_components_without_bonus():
     components = qa_em_format.compute_score_components(
         PERFECT_TRAJECTORY,
@@ -182,6 +196,26 @@ def test_require_search_false_preserves_no_search_format_shaping():
     assert invalid_no_search["base_score"] == 0.1
 
 
+def test_require_search_false_preserves_invalid_sequence_final_format_shaping():
+    components = qa_em_format.compute_score_components(
+        INVALID_PLANNER_LEGAL_SEARCH_WRONG_TRAJECTORY,
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=False,
+    )
+
+    is_valid_format, _ = qa_em_format.is_valid_sequence(
+        INVALID_PLANNER_LEGAL_SEARCH_WRONG_TRAJECTORY
+    )
+    assert is_valid_format is False
+    assert components["has_search"] is True
+    assert components["effective_structure_format"] == 1.0
+    assert components["effective_retrieval"] == 1.0
+    assert components["base_score"] == 0.1
+
+
 def test_extract_solution_keeps_standalone_single_answer_compatibility():
     assert qa_em_format.extract_solution("<answer>Ulm</answer>") is None
     assert (
@@ -245,6 +279,27 @@ def test_require_search_true_keeps_structure_shaping_with_legal_tool_call():
     assert components["base_score"] == 0.2
 
 
+def test_require_search_true_blocks_invalid_sequence_final_format_shaping():
+    components = qa_em_format.compute_score_components(
+        INVALID_PLANNER_LEGAL_SEARCH_WRONG_TRAJECTORY,
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=True,
+    )
+
+    is_valid_format, _ = qa_em_format.is_valid_sequence(
+        INVALID_PLANNER_LEGAL_SEARCH_WRONG_TRAJECTORY
+    )
+    assert is_valid_format is False
+    assert components["has_search"] is True
+    assert components["effective_structure_format"] == 1.0
+    assert components["effective_retrieval"] == 1.0
+    assert components["base_score"] == 0
+    assert components["final_score"] == 0
+
+
 def test_require_search_true_keeps_exact_match_outcome_reward_without_search():
     components = qa_em_format.compute_score_components(
         NO_SEARCH_WRONG_TRAJECTORY.replace("<answer>wrong</answer>", "<answer>Ulm</answer>"),
@@ -260,6 +315,24 @@ def test_require_search_true_keeps_exact_match_outcome_reward_without_search():
     assert components["effective_structure_format"] == 0.0
     assert components["effective_retrieval"] == 0.0
     assert components["base_score"] == 1.0
+
+
+def test_require_search_true_keeps_exact_match_outcome_reward_with_invalid_format():
+    components = qa_em_format.compute_score_components(
+        INVALID_PLANNER_LEGAL_SEARCH_WRONG_TRAJECTORY.replace(
+            "<answer>wrong</answer>",
+            "<answer>Ulm</answer>",
+        ),
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        score=1.0,
+        require_search_for_format=True,
+    )
+
+    assert components["has_search"] is True
+    assert components["base_score"] == 0.8
 
 
 @pytest.mark.parametrize(

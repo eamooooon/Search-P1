@@ -421,6 +421,11 @@ def compute_score_components(solution_str,
     is_valid_format, _ = is_valid_sequence(solution_str)
     has_search = has_legal_tool_call(solution_str)
     format_shaping_allowed = (not require_search_for_format) or has_search
+    final_format_shaping_allowed = format_shaping_allowed and (
+        (not require_search_for_format) or is_valid_format
+    )
+    # These component metrics describe whether the search gate allows shaping.
+    # They are not a substitute for is_valid_format.
     effective_structure_format = 1.0 if format_shaping_allowed else 0.0
     effective_retrieval = 1.0 if format_shaping_allowed else 0.0
     retrieval_correct = False
@@ -453,7 +458,7 @@ def compute_score_components(solution_str,
                 base_score = structure_format_score + retrieval_score # 0.3
             else:
                 base_score = structure_format_score # 0.2
-        elif format_shaping_allowed:
+        elif final_format_shaping_allowed:
             base_score = final_format_score # 0.1
         else:
             base_score = 0
