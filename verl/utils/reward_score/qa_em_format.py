@@ -271,8 +271,8 @@ def is_valid_sequence(text):
         return False, "Multiple <plan> blocks are not allowed"
     if plan_count != 1:
         return False, "Missing required <plan> block"
-    if not extract_plan_steps(content):
-        return False, "Missing valid plan steps"
+    if not validate_planner_block(content):
+        return False, "Missing or invalid plan steps"
 
     split_pattern = r"(</?(?:plan|reasoning|tool_call|tool_response|answer)>)"
     parts = re.split(split_pattern, content)

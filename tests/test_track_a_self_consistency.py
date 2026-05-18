@@ -78,6 +78,18 @@ Step 2: Search duplicate planner.
 <answer>wrong</answer>"""
 
 
+INVALID_PLANNER_PARTIAL_STEP_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search first children's day celebration India.
+Step 2: If no direct information found, search history of children's day India.
+</plan>
+<reasoning>I need evidence.</reasoning>
+<tool_call>first children's day celebration India</tool_call>
+<tool_response>Doc 1 mentions a celebration date.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>wrong</answer>"""
+
+
 def test_self_consistency_perfect_match_records_components_without_bonus():
     components = qa_em_format.compute_score_components(
         PERFECT_TRAJECTORY,
@@ -298,6 +310,37 @@ def test_require_search_true_blocks_invalid_sequence_final_format_shaping():
     assert components["effective_retrieval"] == 1.0
     assert components["base_score"] == 0
     assert components["final_score"] == 0
+
+
+def test_invalid_planner_partial_step_cannot_take_structure_format_score():
+    self_components = qa_em_format.compute_self_consistency_components(
+        INVALID_PLANNER_PARTIAL_STEP_TRAJECTORY
+    )
+    is_valid_format, _ = qa_em_format.is_valid_sequence(
+        INVALID_PLANNER_PARTIAL_STEP_TRAJECTORY
+    )
+    gated_components = qa_em_format.compute_score_components(
+        INVALID_PLANNER_PARTIAL_STEP_TRAJECTORY,
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=True,
+    )
+    legacy_components = qa_em_format.compute_score_components(
+        INVALID_PLANNER_PARTIAL_STEP_TRAJECTORY,
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=False,
+    )
+
+    assert self_components["self_r_planner"] == 0.0
+    assert is_valid_format is False
+    assert gated_components["has_search"] is True
+    assert gated_components["base_score"] == 0
+    assert legacy_components["base_score"] == 0.1
 
 
 def test_require_search_true_keeps_exact_match_outcome_reward_without_search():

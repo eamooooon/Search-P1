@@ -292,3 +292,20 @@
   - 运行 `git diff --check` 检查补丁空白格式。
 - 后续观察：
   - 优先用 20-step dump 对比前 10-20 step 的 no-search / invalid-format 分布，确认 early stability 和 mid-run shortcut 是否已经可判定，同时省掉后 10 step 时间。
+
+## 2026-05-18 - v8 invalid planner structure shaping 对齐
+
+- 现象：
+  - v8 日志里仍能看到少量 `invalid_planner + base_score=0.2` 样本。
+  - 典型轨迹里 planner 第一行是合法 `Step N: Search ...`，后续非空行不是严格的 `Step N: Search ...`，Track A 已判为 `self_r_planner=0`，但 format reward 仍把 full sequence 判为 valid。
+- 根因：
+  - `is_valid_sequence` 在 plan 数量检查后只调用 `extract_plan_steps` 判断“至少有一个合法 step”。
+  - `extract_plan_steps` 会跳过非法 planner 行，导致“部分合法 planner”绕过结构格式校验，进而在 wrong answer + legal search 时拿到 `structure_format_score=0.2`。
+- 调整：
+  - `is_valid_sequence` 改为复用完整 `validate_planner_block` 校验。
+  - planner block 必须单个前置、每个非空行都匹配 `Step N: Search ...`，且 step 编号连续。
+- 验证：
+  - 增加回归测试覆盖 partial planner step：`self_r_planner=0`、`is_valid_sequence=False`、`require_search_for_format=true` 时 `base_score=0`。
+  - 保持 legacy 兼容：`require_search_for_format=false` 下 invalid format wrong answer 只拿 `final_format_score=0.1`，不再拿 structure 0.2。
+- 后续观察：
+  - 继续用 v8/v9 dump 检查 `invalid_planner` 样本的 `base_score` 分布，确认 `self_r_planner=0` 与 format reward 合法性不再分裂。
