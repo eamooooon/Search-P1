@@ -44,7 +44,44 @@ _MATCH_STOPWORDS = {
     "the",
     "to",
 }
-_SUPPORTED_PATH_MATCH_STRATEGIES = {"lexical"}
+_INTENT_PLACEHOLDER_PATTERN = re.compile(r"\[[^\]]+\]")
+_INTENT_STOPWORDS = {
+    "actor",
+    "actress",
+    "details",
+    "determine",
+    "entity",
+    "film",
+    "find",
+    "identified",
+    "identify",
+    "information",
+    "item",
+    "movie",
+    "person",
+    "relevant",
+    "result",
+    "specific",
+    "target",
+    "thing",
+}
+_INTENT_GENERIC_SINGLE_OVERLAP = {
+    "age",
+    "birth",
+    "birthplace",
+    "character",
+    "city",
+    "country",
+    "date",
+    "location",
+    "name",
+    "nationality",
+    "place",
+    "role",
+    "title",
+    "year",
+}
+_SUPPORTED_PATH_MATCH_STRATEGIES = {"intent_lexical", "lexical"}
 
 
 def validate_path_match_strategy(match_strategy):
@@ -141,10 +178,12 @@ def _has_single_front_loaded_plan(text):
     return bool(re.match(r"^\s*<plan>.*?</plan>", content, re.DOTALL))
 
 
-def validate_planner_block(text, steps=None):
+def validate_planner_block(text, steps=None, max_plan_steps=None):
     if steps is None:
         steps = extract_plan_steps(text)
     if not _has_single_front_loaded_plan(text) or not validate_planner_steps(steps):
+        return False
+    if max_plan_steps is not None and len(steps) > max_plan_steps:
         return False
 
     plan_text = _extract_plan_text(text)
@@ -167,10 +206,14 @@ def normalize_step(text):
     return " ".join(tokens)
 
 
-def step_matches_action(step, action, match_strategy="lexical"):
-    validate_path_match_strategy(match_strategy)
-    step_text = normalize_step(step)
-    action_text = normalize_step(action)
+def normalize_intent_step(text):
+    text = _INTENT_PLACEHOLDER_PATTERN.sub(" ", text)
+    normalized = normalize_step(text)
+    tokens = [token for token in normalized.split() if token not in _INTENT_STOPWORDS]
+    return " ".join(tokens)
+
+
+def _lexical_step_matches_action(step_text, action_text):
     if not step_text or not action_text:
         return False
     if step_text in action_text or action_text in step_text:
@@ -186,6 +229,35 @@ def step_matches_action(step, action, match_strategy="lexical"):
     if shorter_len == 1:
         return bool(overlap) and len(step_tokens | action_tokens) <= 3
     return len(overlap) / shorter_len >= 0.5
+
+
+def _intent_lexical_step_matches_action(step, action):
+    step_text = normalize_step(step)
+    action_text = normalize_step(action)
+    if _lexical_step_matches_action(step_text, action_text):
+        return True
+
+    intent_text = normalize_intent_step(step)
+    intent_tokens = set(intent_text.split())
+    action_tokens = set(action_text.split())
+    if len(intent_tokens) < 2 or not action_tokens:
+        return False
+
+    overlap = intent_tokens & action_tokens
+    if not overlap:
+        return False
+    if len(overlap) == 1 and next(iter(overlap)) in _INTENT_GENERIC_SINGLE_OVERLAP:
+        return False
+    return len(overlap) >= 2 or (len(overlap) / len(intent_tokens)) >= 0.5
+
+
+def step_matches_action(step, action, match_strategy="lexical"):
+    validate_path_match_strategy(match_strategy)
+    step_text = normalize_step(step)
+    action_text = normalize_step(action)
+    if match_strategy == "lexical":
+        return _lexical_step_matches_action(step_text, action_text)
+    return _intent_lexical_step_matches_action(step, action)
 
 
 def count_covered_steps(steps, actions, match_strategy="lexical"):
@@ -212,18 +284,19 @@ def count_covered_steps(steps, actions, match_strategy="lexical"):
     return covered
 
 
-def compute_self_consistency_score(solution_str, match_strategy="lexical"):
+def compute_self_consistency_score(solution_str, match_strategy="lexical", max_plan_steps=None):
     return compute_self_consistency_components(
         solution_str,
         match_strategy=match_strategy,
+        max_plan_steps=max_plan_steps,
     )["self_consistency"]
 
 
-def compute_self_consistency_components(solution_str, match_strategy="lexical"):
+def compute_self_consistency_components(solution_str, match_strategy="lexical", max_plan_steps=None):
     validate_path_match_strategy(match_strategy)
     steps = extract_plan_steps(solution_str)
     actions = extract_tool_calls(solution_str)
-    r_planner = 1.0 if validate_planner_block(solution_str, steps) else 0.0
+    r_planner = 1.0 if validate_planner_block(solution_str, steps, max_plan_steps=max_plan_steps) else 0.0
     n_plan = len(steps)
     n_actions = len(actions)
     n_exec_self = 0
@@ -256,7 +329,7 @@ def is_valid_search_query(query):
     return True
 
 
-def is_valid_sequence(text):
+def is_valid_sequence(text, max_plan_steps=None):
     content = _extract_assistant_content(text)
 
     tags_to_check = ["plan", "reasoning", "tool_call", "tool_response", "answer"]
@@ -271,7 +344,7 @@ def is_valid_sequence(text):
         return False, "Multiple <plan> blocks are not allowed"
     if plan_count != 1:
         return False, "Missing required <plan> block"
-    if not validate_planner_block(content):
+    if not validate_planner_block(content, max_plan_steps=max_plan_steps):
         return False, "Missing or invalid plan steps"
 
     split_pattern = r"(</?(?:plan|reasoning|tool_call|tool_response|answer)>)"
@@ -383,7 +456,8 @@ def compute_score_em(solution_str,
                      format_score=0,
                      score=1.,
                      path_match_strategy="lexical",
-                     require_search_for_format=False):
+                     require_search_for_format=False,
+                     max_plan_steps=None):
     """The scoring function for exact match (EM).
 
     Args:
@@ -404,6 +478,7 @@ def compute_score_em(solution_str,
         score=score,
         path_match_strategy=path_match_strategy,
         require_search_for_format=require_search_for_format,
+        max_plan_steps=max_plan_steps,
     )["final_score"]
 
 
@@ -416,9 +491,10 @@ def compute_score_components(solution_str,
                              format_score=0,
                              score=1.,
                              path_match_strategy="lexical",
-                             require_search_for_format=False):
+                             require_search_for_format=False,
+                             max_plan_steps=None):
     validate_path_match_strategy(path_match_strategy)
-    is_valid_format, _ = is_valid_sequence(solution_str)
+    is_valid_format, _ = is_valid_sequence(solution_str, max_plan_steps=max_plan_steps)
     has_search = has_legal_tool_call(solution_str)
     format_shaping_allowed = (not require_search_for_format) or has_search
     final_format_shaping_allowed = format_shaping_allowed and (
@@ -466,6 +542,7 @@ def compute_score_components(solution_str,
     self_components = compute_self_consistency_components(
         solution_str,
         match_strategy=path_match_strategy,
+        max_plan_steps=max_plan_steps,
     )
     final_score = base_score
 

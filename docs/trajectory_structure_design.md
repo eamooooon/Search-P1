@@ -53,7 +53,9 @@ Planner 是单个前置 `<plan>` block。它必须：
 - 只出现一次。
 - 包含编号步骤。
 - 每个步骤使用 `Step N: Search ...` 形式。
-- 描述完整搜索策略，而不是只描述当前一步。
+- 描述短而可执行的 search intent list，而不是 exact query list；每个 step 是一个可执行搜索目标，不要求等同于最终 `<tool_call>` query。
+- 如果后续搜索依赖未知中间结果，可以使用 `[identified actor]`、`[identified film]`、`[target entity]` 这类 placeholder。
+- 不列 fallback branches、year-by-year searches、episode-by-episode searches 或长枚举式 exhaustive lists。
 
 示例：
 
@@ -61,6 +63,15 @@ Planner 是单个前置 `<plan>` block。它必须：
 <plan>
 Step 1: Search the main entity mentioned in the question.
 Step 2: Search the specific attribute needed for the final answer.
+</plan>
+```
+
+多跳 intent 示例：
+
+```text
+<plan>
+Step 1: Search That Touch of Mink cast to identify the relevant actress.
+Step 2: Search [identified actress] role in The Honeymooners.
 </plan>
 ```
 
@@ -196,6 +207,7 @@ is_valid_format(solution_str) -> bool
 - `<tool_response>` 内出现看似 query 的文本不会被计为 action。
 - plan-only 第一阶段在非最终 rollout step 可接受，在最终 rollout step 不可接受。
 - `require_search_for_format == true` 时，错误答案且没有 `<tool_call>` 的轨迹不获得结构轨迹格式分。
+- 训练诊断可配置 `reward_model.max_plan_steps=4`，与 `max_turns=4` 对齐；超过上限的 planner 视为 invalid sequence，不获得结构轨迹格式分，Track A 中 `self_r_planner=0`。
 
 ## 范围边界
 

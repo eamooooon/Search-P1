@@ -148,6 +148,7 @@ reward_model:
   retrieval_score: 0
   path_match_strategy: lexical
   require_search_for_format: false
+  max_plan_steps: null
   trajectory_dump_path: null
   trajectory_dump_limit: 0
 

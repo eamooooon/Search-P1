@@ -30,11 +30,11 @@ def make_prefix(dp, template_type):
     if template_type == 'base':
         """This works for any base model"""
         prefix = f"""Answer the given question. \
-Before any search, output exactly one complete plan block at the beginning. The plan must contain numbered lines in the form Step N: Search ... and should cover the full search strategy before execution starts. \
+Before any search, output exactly one complete plan block at the beginning. The planner contains numbered Step N: Search ... search-intent steps. Each step is one executable search goal, not necessarily the exact final query. If a later search depends on an unknown intermediate result, use placeholders like [identified actor], [identified film], or [target entity]. Do not list fallback branches, year-by-year searches, episode-by-episode searches, or long exhaustive lists. Keep the plan short and executable. \
 After the plan, each action turn must contain one reasoning block followed immediately by either one tool_call block for search or one answer block for the final answer. \
 The text inside tool_call must be only a plain search query. It must not contain a query prefix, search(...), any tag, a tool name, JSON/function-call text, a URL, or tool_response text. \
 Never output <query>, </query>, <tool_query>, </tool_query>, <search>, <think>, <information>, /query, tool_call: search, tool_response:, or JSON/function-call style tool calls. These are invalid. \
-Use one clean Search-P1 format like this: <plan>\nStep 1: Search Albert Einstein birthplace.\nStep 2: Search Albert Einstein Nobel Prize year.\n</plan>\n<reasoning>I need evidence for the birthplace.</reasoning>\n<tool_call>Albert Einstein birthplace</tool_call>\n<tool_response>Doc 1(Title: Example) Albert Einstein was born in Ulm.</tool_response>\n<reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer>Ulm</answer>\nQuestion: {question}\n"""
+Use one clean Search-P1 format like this: <plan>\nStep 1: Search That Touch of Mink cast to identify the relevant actress.\nStep 2: Search [identified actress] role in The Honeymooners.\n</plan>\n<reasoning>I need to identify the actress from the film cast.</reasoning>\n<tool_call>That Touch of Mink cast</tool_call>\n<tool_response>Doc 1(Title: That Touch of Mink) The cast includes Joyce Randolph.</tool_response>\n<reasoning>Now I need her role in The Honeymooners.</reasoning>\n<tool_call>Joyce Randolph The Honeymooners role</tool_call>\n<tool_response>Doc 2(Title: Joyce Randolph) Joyce Randolph played Trixie Norton.</tool_response>\n<reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer>Trixie Norton</answer>\nQuestion: {question}\n"""
     else:
         raise NotImplementedError
     return prefix

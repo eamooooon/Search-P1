@@ -132,7 +132,7 @@ def snippet(text: str, max_chars: int):
     return compact[: max_chars - 3] + "..."
 
 
-def analyze_rows(rows, reward_module, match_strategy: str, low_score_threshold: float, sample_size: int):
+def analyze_rows(rows, reward_module, match_strategy: str, max_plan_steps: Optional[int], low_score_threshold: float, sample_size: int):
     records = []
     failure_counts = Counter()
     low_samples = []
@@ -147,6 +147,7 @@ def analyze_rows(rows, reward_module, match_strategy: str, low_score_threshold: 
         components = reward_module.compute_self_consistency_components(
             solution_str,
             match_strategy=match_strategy,
+            max_plan_steps=max_plan_steps,
         )
         ground_truth = normalize_ground_truth(row)
         if ground_truth is not None:
@@ -154,6 +155,7 @@ def analyze_rows(rows, reward_module, match_strategy: str, low_score_threshold: 
                 solution_str,
                 ground_truth,
                 path_match_strategy=match_strategy,
+                max_plan_steps=max_plan_steps,
             )
             components["base_score"] = score_components["base_score"]
             components["final_score"] = score_components["final_score"]
@@ -310,7 +312,8 @@ def parse_args(argv=None):
     row_group.add_argument("--limit", type=positive_int, default=None, help="Maximum non-empty rows per input file.")
     row_group.add_argument("--tail", type=positive_int, default=None, help="Read only the last N non-empty JSONL rows per input file.")
     parser.add_argument("--bucket-size", type=positive_int, default=None, help="Group analyzed records into ordered buckets of N rows.")
-    parser.add_argument("--match-strategy", default="lexical", help="Path match strategy. Currently only lexical is supported.")
+    parser.add_argument("--match-strategy", default="lexical", help="Path match strategy: lexical or intent_lexical.")
+    parser.add_argument("--max-plan-steps", type=positive_int, default=None, help="Mark planners longer than N steps invalid when recomputing Track A.")
     parser.add_argument("--low-score-threshold", type=float, default=0.5, help="Threshold for printing low-score samples.")
     parser.add_argument("--sample-size", type=int, default=5, help="Maximum low-score samples to print.")
     parser.add_argument("--snippet-chars", type=int, default=240, help="Maximum characters per printed sample snippet.")
@@ -333,6 +336,7 @@ def main(argv=None):
         rows,
         reward_module=reward_module,
         match_strategy=args.match_strategy,
+        max_plan_steps=args.max_plan_steps,
         low_score_threshold=args.low_score_threshold,
         sample_size=args.sample_size,
     )

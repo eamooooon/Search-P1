@@ -27,6 +27,32 @@ Step 1: Search Albert Einstein birthplace.
 <answer>Ulm</answer>"""
 
 
+INTENT_INSTANTIATED_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search [identified actress] character in The Honeymooners.
+</plan>
+<reasoning>I need the character for the identified actress.</reasoning>
+<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
+<tool_response>Doc 1 says Joyce Randolph played Trixie Norton.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>Trixie Norton</answer>"""
+
+
+LONG_PLAN_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search topic one.
+Step 2: Search topic two.
+Step 3: Search topic three.
+Step 4: Search topic four.
+Step 5: Search topic five.
+</plan>
+<reasoning>I will execute the first search.</reasoning>
+<tool_call>topic one</tool_call>
+<tool_response>Doc 1 has evidence.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>wrong</answer>"""
+
+
 def test_track_a_analysis_script_outputs_summary(tmp_path):
     jsonl_path = tmp_path / "samples.jsonl"
     rows = [
@@ -133,6 +159,62 @@ def test_track_a_analysis_script_tail_and_bucket_json_output(tmp_path):
         "start": f"{jsonl_path}:5",
         "end": f"{jsonl_path}:5",
     }
+
+
+def test_track_a_analysis_script_accepts_intent_lexical_strategy(tmp_path):
+    jsonl_path = tmp_path / "intent.jsonl"
+    jsonl_path.write_text(
+        json.dumps({"solution_str": INTENT_INSTANTIATED_TRAJECTORY}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/analysis/track_a_self_consistency.py",
+            str(jsonl_path),
+            "--match-strategy",
+            "intent_lexical",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["samples"] == 1
+    assert payload["summary"]["self_consistency"]["mean"] == 1.0
+    assert payload["summary"]["failure_counts"]["complete"] == 1
+
+
+def test_track_a_analysis_script_accepts_max_plan_steps(tmp_path):
+    jsonl_path = tmp_path / "long_plan.jsonl"
+    jsonl_path.write_text(
+        json.dumps({"solution_str": LONG_PLAN_TRAJECTORY}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/analysis/track_a_self_consistency.py",
+            str(jsonl_path),
+            "--max-plan-steps",
+            "4",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["samples"] == 1
+    assert payload["summary"]["planner_valid_rate"] == 0.0
+    assert payload["summary"]["failure_counts"]["invalid_planner"] == 1
 
 
 def test_track_a_analysis_script_tail_applies_per_input_file(tmp_path):

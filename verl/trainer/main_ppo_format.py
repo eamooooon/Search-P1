@@ -46,6 +46,7 @@ class RewardManager():
                  format_score=0.,
                  path_match_strategy="lexical",
                  require_search_for_format=False,
+                 max_plan_steps=None,
                  trajectory_dump_path=None,
                  trajectory_dump_limit=0,
                  trajectory_dump_split=None) -> None:
@@ -58,6 +59,7 @@ class RewardManager():
         self.retrieval_score = retrieval_score
         self.path_match_strategy = path_match_strategy
         self.require_search_for_format = require_search_for_format
+        self.max_plan_steps = max_plan_steps
         self.trajectory_dump_path = trajectory_dump_path
         self.trajectory_dump_limit = int(trajectory_dump_limit or 0)
         self.trajectory_dump_split = trajectory_dump_split
@@ -142,6 +144,7 @@ class RewardManager():
                     format_score=self.format_score,
                     path_match_strategy=self.path_match_strategy,
                     require_search_for_format=self.require_search_for_format,
+                    max_plan_steps=self.max_plan_steps,
                 )
                 score = components["final_score"]
             else:
@@ -195,6 +198,7 @@ def _reward_manager_kwargs(config):
         "retrieval_score": config.reward_model.retrieval_score,
         "path_match_strategy": path_match_strategy,
         "require_search_for_format": getattr(config.reward_model, "require_search_for_format", False),
+        "max_plan_steps": getattr(config.reward_model, "max_plan_steps", None),
         "trajectory_dump_path": getattr(config.reward_model, "trajectory_dump_path", None),
         "trajectory_dump_limit": getattr(config.reward_model, "trajectory_dump_limit", 0),
     }

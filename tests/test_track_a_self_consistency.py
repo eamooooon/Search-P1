@@ -30,6 +30,28 @@ Step 2: Search Albert Einstein Nobel Prize year.
 <answer>Ulm and 1921</answer>"""
 
 
+INTENT_INSTANTIATED_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search [identified actress] character in The Honeymooners.
+</plan>
+<reasoning>I need the character for the identified actress.</reasoning>
+<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
+<tool_response>Doc 1 says Joyce Randolph played Trixie Norton.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>Trixie Norton</answer>"""
+
+
+INTENT_TOO_GENERIC_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search [identified winner] nationality.
+</plan>
+<reasoning>I need the winner nationality.</reasoning>
+<tool_call>Jonas Vingegaard nationality</tool_call>
+<tool_response>Doc 1 says Jonas Vingegaard is Danish.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>Danish</answer>"""
+
+
 NO_SEARCH_WRONG_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
@@ -86,6 +108,21 @@ Step 2: If no direct information found, search history of children's day India.
 <reasoning>I need evidence.</reasoning>
 <tool_call>first children's day celebration India</tool_call>
 <tool_response>Doc 1 mentions a celebration date.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>wrong</answer>"""
+
+
+LONG_PLAN_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search topic one.
+Step 2: Search topic two.
+Step 3: Search topic three.
+Step 4: Search topic four.
+Step 5: Search topic five.
+</plan>
+<reasoning>I will execute the first search.</reasoning>
+<tool_call>topic one</tool_call>
+<tool_response>Doc 1 has evidence.</tool_response>
 <reasoning>Now answer.</reasoning>
 <answer>wrong</answer>"""
 
@@ -164,6 +201,63 @@ Step 2: Search Albert Einstein Nobel Prize year.
 <answer>Ulm</answer>"""
 
     components = qa_em_format.compute_self_consistency_components(duplicate_action)
+
+    assert components["self_n_plan"] == 2
+    assert components["self_n_actions"] == 2
+    assert components["self_n_exec"] == 1
+    assert components["self_consistency"] == 0.25
+
+
+def test_intent_lexical_matches_instantiated_intermediate_entity():
+    lexical_components = qa_em_format.compute_self_consistency_components(
+        INTENT_INSTANTIATED_TRAJECTORY,
+        match_strategy="lexical",
+    )
+    intent_components = qa_em_format.compute_self_consistency_components(
+        INTENT_INSTANTIATED_TRAJECTORY,
+        match_strategy="intent_lexical",
+    )
+
+    assert lexical_components["self_n_exec"] == 0
+    assert lexical_components["self_consistency"] == 0.0
+    assert intent_components["self_n_exec"] == 1
+    assert intent_components["self_consistency"] == 1.0
+    assert qa_em_format.step_matches_action(
+        "Search [identified actress] role in The Honeymooners.",
+        "Joyce Randolph Honeymooners role",
+        match_strategy="intent_lexical",
+    )
+
+
+def test_intent_lexical_rejects_single_generic_overlap():
+    components = qa_em_format.compute_self_consistency_components(
+        INTENT_TOO_GENERIC_TRAJECTORY,
+        match_strategy="intent_lexical",
+    )
+
+    assert components["self_n_exec"] == 0
+    assert components["self_consistency"] == 0.0
+
+
+def test_intent_lexical_duplicate_actions_do_not_cover_multiple_steps():
+    duplicate_intent_action = """<|im_start|>assistant
+<plan>
+Step 1: Search [identified actress] character in The Honeymooners.
+Step 2: Search [identified actress] role in The Honeymooners.
+</plan>
+<reasoning>I need the character.</reasoning>
+<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
+<tool_response>Doc 1 says Joyce Randolph played Trixie Norton.</tool_response>
+<reasoning>I repeat the same query.</reasoning>
+<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
+<tool_response>Doc 1 again says Joyce Randolph played Trixie Norton.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>Trixie Norton</answer>"""
+
+    components = qa_em_format.compute_self_consistency_components(
+        duplicate_intent_action,
+        match_strategy="intent_lexical",
+    )
 
     assert components["self_n_plan"] == 2
     assert components["self_n_actions"] == 2
@@ -343,6 +437,42 @@ def test_invalid_planner_partial_step_cannot_take_structure_format_score():
     assert legacy_components["base_score"] == 0.1
 
 
+def test_max_plan_steps_marks_long_planner_invalid_and_blocks_structure_reward():
+    steps = qa_em_format.extract_plan_steps(LONG_PLAN_TRAJECTORY)
+    legacy_components = qa_em_format.compute_score_components(
+        LONG_PLAN_TRAJECTORY,
+        {"target": ["right"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=True,
+    )
+    limited_self_components = qa_em_format.compute_self_consistency_components(
+        LONG_PLAN_TRAJECTORY,
+        max_plan_steps=4,
+    )
+    limited_score_components = qa_em_format.compute_score_components(
+        LONG_PLAN_TRAJECTORY,
+        {"target": ["right"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=True,
+        max_plan_steps=4,
+    )
+
+    assert len(steps) == 5
+    assert qa_em_format.validate_planner_block(LONG_PLAN_TRAJECTORY, steps) is True
+    assert qa_em_format.is_valid_sequence(LONG_PLAN_TRAJECTORY)[0] is True
+    assert legacy_components["base_score"] == 0.2
+    assert qa_em_format.validate_planner_block(LONG_PLAN_TRAJECTORY, steps, max_plan_steps=4) is False
+    assert qa_em_format.is_valid_sequence(LONG_PLAN_TRAJECTORY, max_plan_steps=4)[0] is False
+    assert limited_self_components["self_r_planner"] == 0.0
+    assert limited_self_components["self_consistency"] == 0.0
+    assert limited_score_components["has_search"] is True
+    assert limited_score_components["base_score"] == 0
+
+
 def test_require_search_true_keeps_exact_match_outcome_reward_without_search():
     components = qa_em_format.compute_score_components(
         NO_SEARCH_WRONG_TRAJECTORY.replace("<answer>wrong</answer>", "<answer>Ulm</answer>"),
@@ -413,5 +543,8 @@ Step 1: Search Albert Einstein birthplace.
 
 
 def test_unsupported_match_strategy_fails_clearly():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         qa_em_format.compute_self_consistency_score(PERFECT_TRAJECTORY, match_strategy="embedding")
+    message = str(exc_info.value)
+    assert "intent_lexical" in message
+    assert "lexical" in message

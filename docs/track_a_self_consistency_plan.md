@@ -29,7 +29,7 @@ S_self = r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
 
 变量含义：
 
-- `r_planner`：planner 有效性门控。planner 缺失、重复、位置错误，或没有 numbered `Step N: Search ...` 时为 `0`。
+- `r_planner`：planner 有效性门控。planner 缺失、重复、位置错误，没有 numbered `Step N: Search ...`，或超过启用的 `max_plan_steps` 上限时为 `0`。
 - `n_plan`：planner 中声明的搜索步骤数。
 - `n_actions`：模型实际发出的 `<tool_call>` 数量。
 - `n_exec_self`：实际 `<tool_call>` 覆盖了多少 planner step。
@@ -144,6 +144,8 @@ Step 2: Search ...
 </plan>
 ```
 
+这里的 planner step 是 search intent，不是 exact query list。每个 step 表示一个可执行搜索目标，后续 `<tool_call>` 可以把中间检索结果实例化为具体 plain query。对于依赖未知中间结果的多跳问题，planner 可以写 `[identified actor]`、`[identified film]`、`[target entity]` 这类 placeholder；不应写 fallback branches、year-by-year searches、episode-by-episode searches 或长枚举式 exhaustive lists。
+
 Action 是模型实际执行的搜索：
 
 ```text
@@ -156,7 +158,7 @@ Track A 的关键设计点是把两者放在同一个语义空间里比较：
 planner step  <->  tool_call query
 ```
 
-第一版不追求完美语义匹配，而是追求可解释、可复现、容易测试。推荐使用 deterministic lexical matching：
+第一版不追求完美语义匹配，而是追求可解释、可复现、容易测试。基础策略使用 deterministic lexical matching：
 
 - lowercase。
 - 去掉标签和常见标点。
@@ -238,7 +240,7 @@ serialized trajectory
 extract_plan_steps(solution_str) -> list[str]
 extract_tool_calls(solution_str) -> list[str]
 validate_planner_steps(steps) -> bool
-validate_planner_block(solution_str, steps=None) -> bool
+validate_planner_block(solution_str, steps=None, max_plan_steps=None) -> bool
 ```
 
 匹配边界：
@@ -251,7 +253,7 @@ count_covered_steps(steps, actions, match_strategy="lexical") -> int
 评分边界：
 
 ```python
-compute_self_consistency_score(solution_str, match_strategy="lexical") -> float
+compute_self_consistency_score(solution_str, match_strategy="lexical", max_plan_steps=None) -> float
 ```
 
 边界要求：
@@ -260,6 +262,7 @@ compute_self_consistency_score(solution_str, match_strategy="lexical") -> float
 - planner 必须是单个、前置 block；重复 planner 或非前置 planner 应使 `r_planner = 0`。
 - planner 的非空行都必须是 `Step N: Search ...`，并且编号应从 `1` 开始连续递增。
 - planner step 中嵌套标签应视为 planner 无效。
+- 如果启用 `max_plan_steps` 且 planner step 数超过上限，planner 应视为无效；训练诊断使用 `reward_model.max_plan_steps=4` 与 `max_turns=4` 对齐。
 - 非 `lexical` 的 matcher 策略在第一版不应静默 fallback。
 - `compute_self_consistency_score` 不接收 `reference_steps`。
 
@@ -395,6 +398,7 @@ self_n_exec / self_n_actions
 - 重复 action 不虚增 `n_exec_self`。
 - 缺 planner、重复 planner、非前置 planner 均为 `0`。
 - planner 混入非法行或编号不连续时为 `0`。
+- planner 超过 `max_plan_steps=4` 时为 `0`，并且在 `require_search_for_format=true` 下错误答案不能拿结构格式分。
 - `<tool_response>` 中的伪 `<tool_call>` 不计数。
 - `compute_score_em` 返回值不受 `S_self` 影响。
 

@@ -309,3 +309,39 @@
   - 保持 legacy 兼容：`require_search_for_format=false` 下 invalid format wrong answer 只拿 `final_format_score=0.1`，不再拿 structure 0.2。
 - 后续观察：
   - 继续用 v8/v9 dump 检查 `invalid_planner` 样本的 `base_score` 分布，确认 `self_r_planner=0` 与 format reward 合法性不再分裂。
+
+## 2026-05-20 - Track A intent-aware lexical matcher
+
+- 现象：
+  - `lexical` matcher 只能比较 planner 字面 step 和 `<tool_call>` query，遇到“先识别实体，再用搜索结果实例化后续查询”的轨迹时会低估执行覆盖。
+  - 典型样本是 planner 写 `Search [identified actress] character in The Honeymooners.`，实际 action 写 `Joyce Randolph Trixie Norton The Honeymooners`，两者语义连续但字面 overlap 被 placeholder 稀释。
+- 根因：
+  - planner step 里有 `[identified ...]` 这类中间实体占位符，以及 identified / target / specific / information 等低信息胶水词。
+  - action query 往往已经替换成检索得到的实体名，旧 matcher 没有 intent normalization，只能按完整 token overlap 判断。
+- 调整：
+  - 新增可选 `intent_lexical` 策略，默认仍为 `lexical`，并保留旧 matcher 行为不变。
+  - `intent_lexical` 先尝试原 lexical；失败后移除 bracket placeholders 和低信息 intent glue，再按 intent tokens 与 action tokens 的覆盖率匹配。
+  - 增加保护：intent tokens 少于 2 个不匹配；单个 overlap 如果只是 `role`、`date`、`nationality` 等泛词不匹配，避免 `[identified winner] nationality` 这类样本被过宽放行。
+  - 训练脚本显式设置 `reward_model.path_match_strategy=intent_lexical`，dump 切到 `tracka-v10-intent-20steps.jsonl`，保留 20-step 和 `require_search_for_format=true`。
+- 验证：
+  - 增加单元测试覆盖 lexical 低估、intent 覆盖、泛词 negative case、重复 action 不重复覆盖多个 plan step、unsupported strategy 报错提示包含新策略。
+- 后续观察：
+  - v10 dump 优先比较 `intent_lexical` 后 `partial_plan_coverage` / `unmatched_actions` 是否下降，同时确认 `nationality`、`date`、`role` 等单泛词没有引入明显误匹配。
+
+## 2026-05-20 - v11 planner intent prompt and max plan steps
+
+- 现象：
+  - v9/v10 暴露出 planner quality 和超长 plan 问题：模型容易把 planner 写成 exact query 清单、fallback branches、year-by-year / episode-by-episode expansion，导致计划不可执行或显著超过 `max_turns=4` 的执行预算。
+  - 这类超长 planner 即使格式行都合法，也不应该拿结构轨迹格式分；Track A 也应将其视为 invalid planner。
+- 根因：
+  - 数据 prompt 只强调 numbered `Step N: Search ...` 和完整搜索策略，没有明确 planner 是 search intent list，而不是 exact query list。
+  - reward / Track A 缺少 plan step 上限，无法把超过执行预算的 planner 判 invalid。
+- 调整：
+  - 数据 prompt 明确 planner step 是一个可执行 search intent，允许 `[identified actor]`、`[identified film]`、`[target entity]` placeholder。
+  - prompt 禁止 fallback branches、year-by-year searches、episode-by-episode searches 和长 exhaustive lists，并替换为多跳 intent 示例。
+  - reward / Track A 增加 `max_plan_steps` 参数；训练脚本设置 `reward_model.max_plan_steps=4`，与 `max_turns=4` 对齐。
+  - dump 切到 `tracka-v11-intent-planlimit-20steps.jsonl`，避免和 v10 intent-only dump 混写。
+- 验证：
+  - 增加 5-step planner 回归测试：默认不设置上限时旧行为保持；`max_plan_steps=4` 时 `validate_planner_block` / `is_valid_sequence` 均失败，`self_r_planner=0`，`require_search_for_format=true` 下错误答案不拿结构格式分。
+- 后续观察：
+  - v11 dump 优先观察 `self_n_plan` 分布、`invalid_planner` 占比和 `base_score` 分布，确认 plan limit 没有误伤短多跳 intent planner。
