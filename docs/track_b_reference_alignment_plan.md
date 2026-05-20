@@ -376,6 +376,24 @@ R_path = max(S_self, S_ref)
 - 立即实现 `R_path = max(S_self, S_ref)`。
 - 把 Track B 写进 Track A analysis 脚本。
 
+## 当前实现状态
+
+截至 2026-05-20，第一版已实现到 reward 旁路观测：
+
+- `qa_em_format.py` 已新增 `compute_reference_alignment_components`。
+- `compute_score_components` 已返回 `reference_alignment`、`ref_available`、`ref_n_steps`、`ref_n_actions`、`ref_n_covered`。
+- `main_ppo_format.py` 已把 Track B components 写入 `reward_components`。
+- `ray_trainer.py` 已把 Track B components 暴露为训练 / 验证 metrics。
+- `ppo_trainer.yaml` 已新增 `reward_model.max_reference_steps`，默认 `null`。
+- 第一版仍保持 Track B 不改变 `final_score`；当前 `final_score` 仍只受既有 `base_score + path_bonus` 逻辑影响。
+
+尚未实现：
+
+- 离线拒绝采样和 LLM voting 生成 `reference_steps`。
+- Track B 专用 JSONL analysis 脚本。
+- `R_path = max(S_self, S_ref)` 双轨组合层。
+- trajectory dump 的中立字段重命名。
+
 ## 设计验收
 
 Track B 第一版设计是否成立，可以用这些问题验收：

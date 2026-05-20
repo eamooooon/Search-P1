@@ -44,7 +44,8 @@ class RewardManager():
                  retrieval_score=0.,
                  format_score=0.,
                  path_reward_weight=0.,
-                 path_match_strategy="lexical") -> None:
+                 path_match_strategy="lexical",
+                 max_reference_steps=None) -> None:
         qa_em_format.validate_path_match_strategy(path_match_strategy)
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
@@ -54,6 +55,7 @@ class RewardManager():
         self.retrieval_score = retrieval_score
         self.path_reward_weight = path_reward_weight
         self.path_match_strategy = path_match_strategy
+        self.max_reference_steps = max_reference_steps
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -67,6 +69,11 @@ class RewardManager():
         reward_components = {
             "base_score": [],
             "self_consistency": [],
+            "reference_alignment": [],
+            "ref_available": [],
+            "ref_n_steps": [],
+            "ref_n_actions": [],
+            "ref_n_covered": [],
             "path_bonus": [],
             "final_score": [],
         }
@@ -107,6 +114,7 @@ class RewardManager():
                     format_score=self.format_score,
                     path_reward_weight=self.path_reward_weight,
                     path_match_strategy=self.path_match_strategy,
+                    max_reference_steps=self.max_reference_steps,
                 )
                 score = components["final_score"]
             else:
@@ -116,10 +124,16 @@ class RewardManager():
                                          retrieval_score=self.retrieval_score,
                                          format_score=self.format_score,
                                          path_reward_weight=self.path_reward_weight,
-                                         path_match_strategy=self.path_match_strategy)
+                                         path_match_strategy=self.path_match_strategy,
+                                         max_reference_steps=self.max_reference_steps)
                 components = {
                     "base_score": score,
                     "self_consistency": 0.0,
+                    "reference_alignment": 0.0,
+                    "ref_available": 0.0,
+                    "ref_n_steps": 0.0,
+                    "ref_n_actions": 0.0,
+                    "ref_n_covered": 0.0,
                     "path_bonus": 0.0,
                     "final_score": score,
                 }
@@ -142,6 +156,7 @@ class RewardManager():
 def _reward_manager_kwargs(config):
     path_reward_weight = getattr(config.reward_model, "path_reward_weight", 0.)
     path_match_strategy = getattr(config.reward_model, "path_match_strategy", "lexical")
+    max_reference_steps = getattr(config.reward_model, "max_reference_steps", None)
     qa_em_format.validate_path_match_strategy(path_match_strategy)
     return {
         "structure_format_score": config.reward_model.structure_format_score,
@@ -149,6 +164,7 @@ def _reward_manager_kwargs(config):
         "retrieval_score": config.reward_model.retrieval_score,
         "path_reward_weight": path_reward_weight,
         "path_match_strategy": path_match_strategy,
+        "max_reference_steps": max_reference_steps,
     }
 
 

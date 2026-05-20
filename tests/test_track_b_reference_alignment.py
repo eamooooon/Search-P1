@@ -1,0 +1,96 @@
+import importlib.util
+from pathlib import Path
+
+
+_QA_EM_FORMAT_PATH = Path(__file__).resolve().parents[1] / "verl" / "utils" / "reward_score" / "qa_em_format.py"
+_SPEC = importlib.util.spec_from_file_location("qa_em_format", _QA_EM_FORMAT_PATH)
+qa_em_format = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(qa_em_format)
+
+
+def test_reference_alignment_does_not_require_planner():
+    solution = (
+        "<reasoning>I need evidence.</reasoning>"
+        "<tool_call>Marie Curie Nobel Prize</tool_call>"
+        "<tool_response>Doc</tool_response>"
+        "<reasoning>I can answer.</reasoning>"
+        "<answer>radium</answer>"
+    )
+    ground_truth = {
+        "target": ["radium"],
+        "reference_steps": ["Search Marie Curie Nobel Prize"],
+    }
+
+    components = qa_em_format.compute_reference_alignment_components(solution, ground_truth)
+
+    assert components["reference_alignment"] == 1.0
+    assert components["ref_available"] == 1.0
+    assert components["ref_n_steps"] == 1
+    assert components["ref_n_actions"] == 1
+    assert components["ref_n_covered"] == 1
+
+
+def test_missing_reference_steps_return_zero_components():
+    solution = "<tool_call>Marie Curie Nobel Prize</tool_call>"
+    ground_truth = {"target": ["radium"]}
+
+    components = qa_em_format.compute_reference_alignment_components(solution, ground_truth)
+
+    assert components["reference_alignment"] == 0.0
+    assert components["ref_available"] == 0.0
+    assert components["ref_n_steps"] == 0
+    assert components["ref_n_actions"] == 1
+    assert components["ref_n_covered"] == 0
+
+
+def test_duplicate_actions_do_not_inflate_reference_coverage():
+    solution = (
+        "<tool_call>Marie Curie Nobel Prize</tool_call>"
+        "<tool_call>Marie Curie Nobel Prize</tool_call>"
+    )
+    ground_truth = {
+        "target": ["radium"],
+        "reference_steps": [
+            "Search Marie Curie Nobel Prize",
+            "Search Marie Curie discovery",
+        ],
+    }
+
+    components = qa_em_format.compute_reference_alignment_components(solution, ground_truth)
+
+    assert components["reference_alignment"] == 0.25
+    assert components["ref_n_steps"] == 2
+    assert components["ref_n_actions"] == 2
+    assert components["ref_n_covered"] == 1
+
+
+def test_reference_alignment_is_observation_not_final_score():
+    solution = (
+        "<tool_call>Marie Curie Nobel Prize</tool_call>"
+        "<answer>radium</answer>"
+    )
+    without_reference = {"target": ["radium"]}
+    with_reference = {
+        "target": ["radium"],
+        "reference_steps": ["Search Marie Curie Nobel Prize"],
+    }
+
+    no_ref_components = qa_em_format.compute_score_components(solution, without_reference)
+    ref_components = qa_em_format.compute_score_components(solution, with_reference)
+
+    assert no_ref_components["final_score"] == ref_components["final_score"]
+    assert no_ref_components["reference_alignment"] == 0.0
+    assert ref_components["reference_alignment"] == 1.0
+
+
+def test_invalid_reference_steps_are_unavailable():
+    solution = "<tool_call>Marie Curie Nobel Prize</tool_call>"
+    ground_truth = {
+        "target": ["radium"],
+        "reference_steps": ["Search Marie Curie <tool_call>Nobel Prize</tool_call>"],
+    }
+
+    components = qa_em_format.compute_reference_alignment_components(solution, ground_truth)
+
+    assert components["reference_alignment"] == 0.0
+    assert components["ref_available"] == 0.0

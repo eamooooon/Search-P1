@@ -45,6 +45,12 @@ _MATCH_STOPWORDS = {
     "to",
 }
 _SUPPORTED_PATH_MATCH_STRATEGIES = {"lexical"}
+_REFERENCE_FIELD_WORDS = {
+    "date",
+    "location",
+    "nationality",
+    "role",
+}
 
 
 def validate_path_match_strategy(match_strategy):
@@ -178,6 +184,83 @@ def count_covered_steps(steps, actions, match_strategy="lexical"):
     return covered
 
 
+def extract_reference_steps(ground_truth):
+    if not isinstance(ground_truth, dict):
+        return []
+    steps = ground_truth.get("reference_steps", [])
+    if isinstance(steps, str):
+        steps = [steps]
+    if not isinstance(steps, (list, tuple)):
+        return []
+    return [step.strip() for step in steps if isinstance(step, str) and step.strip()]
+
+
+def validate_reference_steps(steps, max_reference_steps=None):
+    if not steps:
+        return False
+    if max_reference_steps is not None and len(steps) > max_reference_steps:
+        return False
+    seen_steps = set()
+    for step in steps:
+        normalized = normalize_step(step)
+        if not normalized:
+            return False
+        if _TAG_PATTERN.search(step) or _URL_PATTERN.search(step):
+            return False
+        if len(step.split()) > 32:
+            return False
+        if normalized in seen_steps:
+            return False
+        seen_steps.add(normalized)
+    return True
+
+
+def reference_step_matches_action(reference_step, action, match_strategy="lexical"):
+    validate_path_match_strategy(match_strategy)
+    step_text = normalize_step(reference_step)
+    action_text = normalize_step(action)
+    if not step_text or not action_text:
+        return False
+    if step_text in action_text or action_text in step_text:
+        return True
+
+    step_tokens = set(step_text.split())
+    action_tokens = set(action_text.split())
+    if len(step_tokens) < 2 or not action_tokens:
+        return False
+
+    overlap = step_tokens & action_tokens
+    if len(overlap) == 1 and next(iter(overlap)) in _REFERENCE_FIELD_WORDS:
+        return False
+    return len(overlap) / min(len(step_tokens), len(action_tokens)) >= 0.5
+
+
+def count_reference_covered_steps(reference_steps, actions, match_strategy="lexical"):
+    validate_path_match_strategy(match_strategy)
+    unique_actions = []
+    seen_actions = set()
+    for action in actions:
+        if not is_valid_search_query(action):
+            continue
+        normalized_action = normalize_step(action)
+        if not normalized_action or normalized_action in seen_actions:
+            continue
+        seen_actions.add(normalized_action)
+        unique_actions.append(action)
+
+    matched_actions = set()
+    covered = 0
+    for step in reference_steps:
+        for action_index, action in enumerate(unique_actions):
+            if action_index in matched_actions:
+                continue
+            if reference_step_matches_action(step, action, match_strategy=match_strategy):
+                matched_actions.add(action_index)
+                covered += 1
+                break
+    return covered
+
+
 def compute_self_consistency_score(solution_str, match_strategy="lexical"):
     validate_path_match_strategy(match_strategy)
     steps = extract_plan_steps(solution_str)
@@ -191,6 +274,37 @@ def compute_self_consistency_score(solution_str, match_strategy="lexical"):
 
     n_exec_self = count_covered_steps(steps, actions, match_strategy=match_strategy)
     return r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
+
+
+def compute_reference_alignment_components(solution_str,
+                                           ground_truth,
+                                           match_strategy="lexical",
+                                           max_reference_steps=None):
+    validate_path_match_strategy(match_strategy)
+    reference_steps = extract_reference_steps(ground_truth)
+    ref_available = 1.0 if validate_reference_steps(reference_steps, max_reference_steps=max_reference_steps) else 0.0
+    actions = [action for action in extract_tool_calls(solution_str) if is_valid_search_query(action)]
+    n_reference_steps = len(reference_steps)
+    n_actions = len(actions)
+
+    if ref_available == 0.0 or n_reference_steps == 0 or n_actions == 0:
+        return {
+            "reference_alignment": 0.0,
+            "ref_available": ref_available,
+            "ref_n_steps": n_reference_steps,
+            "ref_n_actions": n_actions,
+            "ref_n_covered": 0,
+        }
+
+    n_covered = count_reference_covered_steps(reference_steps, actions, match_strategy=match_strategy)
+    reference_alignment = (n_covered / n_reference_steps) * (n_covered / n_actions)
+    return {
+        "reference_alignment": reference_alignment,
+        "ref_available": ref_available,
+        "ref_n_steps": n_reference_steps,
+        "ref_n_actions": n_actions,
+        "ref_n_covered": n_covered,
+    }
 
 
 def is_valid_search_query(query):
@@ -331,7 +445,8 @@ def compute_score_em(solution_str,
                      format_score=0,
                      score=1.,
                      path_reward_weight=0.,
-                     path_match_strategy="lexical"):
+                     path_match_strategy="lexical",
+                     max_reference_steps=None):
     """The scoring function for exact match (EM).
 
     Args:
@@ -352,6 +467,7 @@ def compute_score_em(solution_str,
         score=score,
         path_reward_weight=path_reward_weight,
         path_match_strategy=path_match_strategy,
+        max_reference_steps=max_reference_steps,
     )["final_score"]
 
 
@@ -364,7 +480,8 @@ def compute_score_components(solution_str,
                              format_score=0,
                              score=1.,
                              path_reward_weight=0.,
-                             path_match_strategy="lexical"):
+                             path_match_strategy="lexical",
+                             max_reference_steps=None):
     validate_path_match_strategy(path_match_strategy)
     is_valid_format, _ = is_valid_sequence(solution_str)
     retrieval_correct = False
@@ -401,12 +518,20 @@ def compute_score_components(solution_str,
             base_score = final_format_score # 0.1
 
     self_consistency = compute_self_consistency_score(solution_str, match_strategy=path_match_strategy)
+    reference_components = compute_reference_alignment_components(
+        solution_str,
+        ground_truth,
+        match_strategy=path_match_strategy,
+        max_reference_steps=max_reference_steps,
+    )
     path_bonus = path_reward_weight * self_consistency
     final_score = base_score + path_bonus
 
-    return {
+    components = {
         "base_score": base_score,
         "self_consistency": self_consistency,
         "path_bonus": path_bonus,
         "final_score": final_score,
     }
+    components.update(reference_components)
+    return components
