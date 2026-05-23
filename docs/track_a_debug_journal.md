@@ -345,3 +345,9 @@
   - 增加 5-step planner 回归测试：默认不设置上限时旧行为保持；`max_plan_steps=4` 时 `validate_planner_block` / `is_valid_sequence` 均失败，`self_r_planner=0`，`require_search_for_format=true` 下错误答案不拿结构格式分。
 - 后续观察：
   - v11 dump 优先观察 `self_n_plan` 分布、`invalid_planner` 占比和 `base_score` 分布，确认 plan limit 没有误伤短多跳 intent planner。
+## 2026-05-23 - v12 assistant/environment boundary prompt
+
+- Phenomenon: v11 `no_actions` rose sharply, with samples copying or faking `<tool_response>` instead of stopping after `<tool_call>`.
+- Root cause: the prompt example showed one continuous full trajectory, so the model treated environment observations as assistant output to copy.
+- Adjustment: v12 changes data prompts to role-separated assistant/environment turns. Assistant examples stop at `</tool_call>` and environment-only examples return `<tool_response>`.
+- Verification: run py_compile for data_process prompts, `bash -n` for the GRPO script, and `git diff --check`.
