@@ -457,7 +457,8 @@ def compute_score_em(solution_str,
                      score=1.,
                      path_match_strategy="lexical",
                      require_search_for_format=False,
-                     max_plan_steps=None):
+                     max_plan_steps=None,
+                     self_consistency_weight=0.0):
     """The scoring function for exact match (EM).
 
     Args:
@@ -479,6 +480,7 @@ def compute_score_em(solution_str,
         path_match_strategy=path_match_strategy,
         require_search_for_format=require_search_for_format,
         max_plan_steps=max_plan_steps,
+        self_consistency_weight=self_consistency_weight,
     )["final_score"]
 
 
@@ -492,7 +494,8 @@ def compute_score_components(solution_str,
                              score=1.,
                              path_match_strategy="lexical",
                              require_search_for_format=False,
-                             max_plan_steps=None):
+                             max_plan_steps=None,
+                             self_consistency_weight=0.0):
     validate_path_match_strategy(path_match_strategy)
     is_valid_format, _ = is_valid_sequence(solution_str, max_plan_steps=max_plan_steps)
     has_search = has_legal_tool_call(solution_str)
@@ -544,13 +547,16 @@ def compute_score_components(solution_str,
         match_strategy=path_match_strategy,
         max_plan_steps=max_plan_steps,
     )
-    final_score = base_score
+    track_a_bonus = self_consistency_weight * self_components["self_consistency"]
+    final_score = base_score + track_a_bonus
 
     return {
         "base_score": base_score,
         "has_search": has_search,
         "effective_structure_format": effective_structure_format,
         "effective_retrieval": effective_retrieval,
+        "track_a_bonus": track_a_bonus,
+        "self_consistency_weight": self_consistency_weight,
         "final_score": final_score,
         **self_components,
     }

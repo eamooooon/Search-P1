@@ -488,3 +488,23 @@ Track A 的最大风险是 planner 和 action 都是自然语言，匹配天然�
 - 一个 action 实际可能覆盖多个 planner step，但第一版不允许多重覆盖。
 
 这些限制是可接受的，因为 Track A 第一版不改变 scalar reward。它先作为观测信号存在，等分布和失败模式被看清楚后，再决定是否升级 matcher 或接入路径奖励。
+
+## 2026-05-24 - v13 small-weight Track A reward experiment
+
+Track A has moved from observation-only logging to an opt-in small-weight reward experiment. Backward compatibility remains the default:
+
+```text
+reward_model.self_consistency_weight = 0.0
+final_score = base_score
+```
+
+When the weight is positive, the scalar reward is:
+
+```text
+track_a_bonus = self_consistency_weight * self_consistency
+final_score = base_score + track_a_bonus
+```
+
+The v13 diagnostic run uses `reward_model.self_consistency_weight=0.05` with the existing Track A settings: `path_match_strategy=intent_lexical`, `max_plan_steps=4`, and `require_search_for_format=true`.
+
+This is still not Track B. It does not read `reference_steps`, does not compute `S_ref`, and does not use `R_path = max(S_self, S_ref)`. The component name is `track_a_bonus`; the old `path_bonus` name remains forbidden because it blurs Track A self-consistency with future path aggregation.

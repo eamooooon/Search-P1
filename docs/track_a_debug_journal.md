@@ -351,3 +351,21 @@
 - Root cause: the prompt example showed one continuous full trajectory, so the model treated environment observations as assistant output to copy.
 - Adjustment: v12 changes data prompts to role-separated assistant/environment turns. Assistant examples stop at `</tool_call>` and environment-only examples return `<tool_response>`.
 - Verification: run py_compile for data_process prompts, `bash -n` for the GRPO script, and `git diff --check`.
+
+## 2026-05-24 - v13 Track A small-weight reward
+
+- Phenomenon:
+  - v12 fixed the assistant/environment prompt boundary, but self-consistency remains low.
+  - Main failures are still partial plan coverage and actions that do not execute the declared plan.
+- Root cause:
+  - Track A has been observation-only, so it exposes the failure mode but does not reward plan-following behavior.
+- Adjustment:
+  - Add opt-in `reward_model.self_consistency_weight`.
+  - Keep the default at `0.0`, so `final_score == base_score` for compatibility.
+  - For v13 diagnostics set `self_consistency_weight=0.05`, with `final_score = base_score + self_consistency_weight * self_consistency`.
+  - Keep `path_match_strategy=intent_lexical`, `max_plan_steps=4`, and `require_search_for_format=true`.
+  - Do not implement Track B, `S_ref`, or `max(S_self, S_ref)`.
+- Verification:
+  - Add tests for zero weight, perfect Track A bonus, partial Track A bonus, no-action zero bonus, and absence of `path_bonus`.
+- Follow-up observation:
+  - Use `logs/$EXPERIMENT_NAME-tracka-v13-reward-20steps.jsonl` to compare whether a 0.05 Track A signal reduces `partial_plan_coverage` and unmatched action failures without destabilizing base reward behavior.

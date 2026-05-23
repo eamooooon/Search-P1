@@ -145,6 +145,8 @@ def test_self_consistency_perfect_match_records_components_without_bonus():
     assert components["has_search"] is True
     assert components["effective_structure_format"] == 1.0
     assert components["effective_retrieval"] == 1.0
+    assert components["track_a_bonus"] == 0.0
+    assert components["self_consistency_weight"] == 0.0
     assert "path_bonus" not in components
     assert components["final_score"] == components["base_score"]
 
@@ -168,6 +170,77 @@ def test_compute_score_em_preserves_base_score_when_self_consistency_is_positive
 
     assert components["self_consistency"] > 0
     assert score == components["base_score"]
+
+
+def test_self_consistency_weight_adds_perfect_track_a_bonus():
+    components = qa_em_format.compute_score_components(
+        PERFECT_TRAJECTORY,
+        {"target": ["wrong"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        self_consistency_weight=0.05,
+    )
+    score = qa_em_format.compute_score_em(
+        PERFECT_TRAJECTORY,
+        {"target": ["wrong"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        self_consistency_weight=0.05,
+    )
+
+    assert components["self_consistency"] == 1.0
+    assert components["track_a_bonus"] == pytest.approx(0.05)
+    assert components["self_consistency_weight"] == 0.05
+    assert components["final_score"] == pytest.approx(components["base_score"] + 0.05)
+    assert score == components["final_score"]
+    assert "path_bonus" not in components
+
+
+def test_self_consistency_weight_adds_partial_track_a_bonus():
+    partial = """<|im_start|>assistant
+<plan>
+Step 1: Search Albert Einstein birthplace.
+</plan>
+<reasoning>I need the birthplace.</reasoning>
+<tool_call>Albert Einstein birthplace</tool_call>
+<tool_response>Doc 1 says Ulm.</tool_response>
+<reasoning>I also search something unrelated.</reasoning>
+<tool_call>unrelated query</tool_call>
+<tool_response>Noise.</tool_response>
+<reasoning>Now answer.</reasoning>
+<answer>wrong</answer>"""
+
+    components = qa_em_format.compute_score_components(
+        partial,
+        {"target": ["right"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        self_consistency_weight=0.05,
+    )
+
+    assert components["self_consistency"] == 0.5
+    assert components["track_a_bonus"] == pytest.approx(0.025)
+    assert components["final_score"] == pytest.approx(components["base_score"] + 0.025)
+    assert "path_bonus" not in components
+
+
+def test_self_consistency_weight_no_action_adds_zero_bonus():
+    components = qa_em_format.compute_score_components(
+        NO_SEARCH_WRONG_TRAJECTORY,
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        self_consistency_weight=0.05,
+    )
+
+    assert components["self_consistency"] == 0.0
+    assert components["track_a_bonus"] == 0.0
+    assert components["final_score"] == components["base_score"]
+    assert "path_bonus" not in components
 
 
 def test_redundant_action_lowers_self_consistency():

@@ -182,6 +182,8 @@ REWARD_COMPONENT_KEYS = (
     "has_search",
     "effective_structure_format",
     "effective_retrieval",
+    "track_a_bonus",
+    "self_consistency_weight",
     "self_consistency",
     "self_r_planner",
     "self_n_plan",
