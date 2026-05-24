@@ -73,7 +73,9 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo_format \
     reward_model.path_reward_weight=0 \
     reward_model.path_match_strategy=lexical \
     reward_model.max_reference_steps=4 \
+    reward_model.trajectory_dump_path=$TRAJECTORY_DUMP_PATH \
+    reward_model.trajectory_dump_limit=$TRAJECTORY_DUMP_LIMIT \
     max_turns=4 \
     retriever.url="http://127.0.0.1:8000/retrieve" \
     retriever.topk=3 \
-    2>&1 | tee logs/$EXPERIMENT_NAME-trackb-v0.log
+    2>&1 | tee "$LOG_PATH"

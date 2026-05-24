@@ -120,10 +120,18 @@ Track B 只做旁路观测，不改变 scalar reward。
 
 ## 使用流程
 
+如果还没有 trajectory JSONL，先跑一次会落盘 trajectory 的 smoke run：
+
+```bash
+TRAJECTORY_DUMP_PATH=logs/my-trajectories.jsonl \
+TRAJECTORY_DUMP_LIMIT=512 \
+bash scripts/nq_hotpotqa_p1/train_grpo.sh
+```
+
 从 trajectory JSONL 构建 reference：
 
 ```bash
-TRAJECTORY_JSONL=logs/trajectories.jsonl \
+TRAJECTORY_JSONL=logs/my-trajectories.jsonl \
 bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
 ```
 
@@ -138,7 +146,7 @@ bash scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh
 ```
 
 ```bash
-TRAJECTORY_JSONL=logs/trajectories.jsonl \
+TRAJECTORY_JSONL=logs/my-trajectories.jsonl \
 LLM_VOTES_FILE=data/nq_hotpotqa_p1/reference_vote_results.jsonl \
 bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
 ```

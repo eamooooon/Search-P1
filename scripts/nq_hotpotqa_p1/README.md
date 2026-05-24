@@ -37,12 +37,28 @@ bash scripts/nq_hotpotqa_p1/check_reference_steps.sh
 
 ## Build Track B Reference Plans
 
+Reference building needs a real rollout trajectory JSONL. The P1 GRPO smoke
+script now writes one by default:
+
+```text
+logs/<experiment>-trajectories.jsonl
+```
+
+Run `train_grpo.sh` first if you do not already have a trajectory dump. You can
+override the path and dump limit:
+
+```bash
+TRAJECTORY_DUMP_PATH=logs/my-trajectories.jsonl \
+TRAJECTORY_DUMP_LIMIT=512 \
+bash scripts/nq_hotpotqa_p1/train_grpo.sh
+```
+
 Given a rollout trajectory JSONL with `solution_str`, `ground_truth`, and either
 `data_source/split/index` or `question`, build reference plans with rejection
 sampling plus voting prompts:
 
 ```bash
-TRAJECTORY_JSONL=logs/trajectories.jsonl \
+TRAJECTORY_JSONL=logs/my-trajectories.jsonl \
 bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
 ```
 
@@ -93,7 +109,7 @@ LLM_ENV_FILE=.env.llm bash scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh
 ```
 
 ```bash
-TRAJECTORY_JSONL=logs/trajectories.jsonl \
+TRAJECTORY_JSONL=logs/my-trajectories.jsonl \
 LLM_VOTES_FILE=data/nq_hotpotqa_p1/reference_vote_results.jsonl \
 bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
 ```

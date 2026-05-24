@@ -10,7 +10,8 @@
 - P1 目录下已有 bash wrapper：
   - `scripts/nq_hotpotqa_p1/build_reference_steps.sh`
   - `scripts/nq_hotpotqa_p1/check_reference_steps.sh`
-- 下一步重点是用真实 trajectory JSONL 生成 `reference_steps.jsonl`，再重新跑 10-step smoke test。
+- 训练 smoke run 已支持通过 `reward_model.trajectory_dump_path` 落盘 trajectory JSONL。
+- 下一步重点是先生成真实 trajectory JSONL，再用它构建 `reference_steps.jsonl`。
 
 ## 下一步决策依据
 
@@ -21,7 +22,11 @@
 来源：
 
 ```bash
-TRAJECTORY_JSONL=logs/trajectories.jsonl \
+TRAJECTORY_DUMP_PATH=logs/my-trajectories.jsonl \
+TRAJECTORY_DUMP_LIMIT=512 \
+bash scripts/nq_hotpotqa_p1/train_grpo.sh
+
+TRAJECTORY_JSONL=logs/my-trajectories.jsonl \
 bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
 ```
 
@@ -402,3 +407,25 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 如果后续希望完全避免覆盖 fallback reference，可把第一次输出设为 `REFERENCE_STEPS_OUTPUT=.../reference_steps_consensus.jsonl`，第二次输出设为 `.../reference_steps.jsonl`。
+
+## 2026-05-24 - 补齐 trajectory dump 作为 reference 构建输入
+
+- 现象：
+  - 直接运行 `TRAJECTORY_JSONL=logs/trajectories.jsonl bash scripts/nq_hotpotqa_p1/build_reference_steps.sh` 会报 `FileNotFoundError`。
+  - 该路径只是示例，当前分支此前没有自动生成 trajectory JSONL。
+- 根因：
+  - `build_reference_steps.sh` 的输入必须是真实 rollout trajectory。
+  - Track B 离线 reference 构建依赖 `solution_str`、`ground_truth`、`data_source`、`split`、`index` 等字段，但训练脚本没有先把这些字段落盘。
+- 调整：
+  - 新增 `verl/trainer/trajectory_dump.py`，以 JSONL 形式写出 trajectory rows。
+  - `RewardManager` 支持 `reward_model.trajectory_dump_path` 和 `reward_model.trajectory_dump_limit`。
+  - `train_grpo.sh` 默认写 `logs/$EXPERIMENT_NAME-trajectories.jsonl`，默认最多写 512 条。
+  - `build_reference_steps.sh` 增加输入文件存在性检查，缺文件时给出先跑 trajectory-producing smoke run 的提示。
+  - README 和设计文档改为先生成真实 trajectory dump，再运行 reference build。
+- 验证：
+  - 通过 `python -m py_compile verl/trainer/trajectory_dump.py verl/trainer/main_ppo_format.py search_p1/analysis/build_reference_steps.py search_p1/analysis/reference_sampling.py search_p1/analysis/reference_io.py`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/train_grpo.sh`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/build_reference_steps.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 第一轮 dump 后先检查 `build_reference_steps.sh` 输出的 `total_rows`、`correct_rows`、`skipped_no_key` 和 `skipped_correct_no_actions`，再决定是否进入 LLM voting。

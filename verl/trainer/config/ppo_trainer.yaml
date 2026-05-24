@@ -149,6 +149,8 @@ reward_model:
   path_reward_weight: 0
   path_match_strategy: lexical
   max_reference_steps: null
+  trajectory_dump_path: null
+  trajectory_dump_limit: null
 
 retriever:
   url: "http://127.0.0.1:8000/retrieve"

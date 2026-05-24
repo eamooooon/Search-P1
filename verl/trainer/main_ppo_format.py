@@ -19,6 +19,7 @@ from verl import DataProto
 import torch
 from verl.utils.reward_score import qa_em, qa_em_format
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.trainer.trajectory_dump import append_trajectory_dump
 import re
 import numpy as np
 import logging
@@ -45,7 +46,9 @@ class RewardManager():
                  format_score=0.,
                  path_reward_weight=0.,
                  path_match_strategy="lexical",
-                 max_reference_steps=None) -> None:
+                 max_reference_steps=None,
+                 trajectory_dump_path=None,
+                 trajectory_dump_limit=None) -> None:
         qa_em_format.validate_path_match_strategy(path_match_strategy)
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
@@ -56,6 +59,9 @@ class RewardManager():
         self.path_reward_weight = path_reward_weight
         self.path_match_strategy = path_match_strategy
         self.max_reference_steps = max_reference_steps
+        self.trajectory_dump_path = trajectory_dump_path
+        self.trajectory_dump_limit = trajectory_dump_limit
+        self._trajectory_dump_count = 0
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -102,6 +108,8 @@ class RewardManager():
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
+            extra_info = data_item.non_tensor_batch.get('extra_info', {})
+            prompt = data_item.non_tensor_batch.get('prompt')
             compute_score_fn = _select_rm_score_fn(data_source)
 
             if compute_score_fn is qa_em_format.compute_score_em:
@@ -142,6 +150,24 @@ class RewardManager():
             for key, value in components.items():
                 reward_components[key].append(float(value))
 
+            if (
+                self.trajectory_dump_path
+                and (
+                    self.trajectory_dump_limit is None
+                    or self._trajectory_dump_count < self.trajectory_dump_limit
+                )
+            ):
+                append_trajectory_dump(
+                    self.trajectory_dump_path,
+                    solution_str=sequences_str,
+                    ground_truth=ground_truth,
+                    data_source=data_source,
+                    prompt=prompt,
+                    extra_info=extra_info,
+                    reward_components=components,
+                )
+                self._trajectory_dump_count += 1
+
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
@@ -157,6 +183,8 @@ def _reward_manager_kwargs(config):
     path_reward_weight = getattr(config.reward_model, "path_reward_weight", 0.)
     path_match_strategy = getattr(config.reward_model, "path_match_strategy", "lexical")
     max_reference_steps = getattr(config.reward_model, "max_reference_steps", None)
+    trajectory_dump_path = getattr(config.reward_model, "trajectory_dump_path", None)
+    trajectory_dump_limit = getattr(config.reward_model, "trajectory_dump_limit", None)
     qa_em_format.validate_path_match_strategy(path_match_strategy)
     return {
         "structure_format_score": config.reward_model.structure_format_score,
@@ -165,6 +193,8 @@ def _reward_manager_kwargs(config):
         "path_reward_weight": path_reward_weight,
         "path_match_strategy": path_match_strategy,
         "max_reference_steps": max_reference_steps,
+        "trajectory_dump_path": trajectory_dump_path,
+        "trajectory_dump_limit": trajectory_dump_limit,
     }
 
 

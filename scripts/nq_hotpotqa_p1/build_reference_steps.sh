@@ -8,7 +8,15 @@ mkdir -p "$LOCAL_DIR"
 
 if [[ -z "${TRAJECTORY_JSONL:-}" ]]; then
     echo "TRAJECTORY_JSONL is required, for example:" >&2
-    echo "  TRAJECTORY_JSONL=logs/trajectories.jsonl bash scripts/nq_hotpotqa_p1/build_reference_steps.sh" >&2
+    echo "  TRAJECTORY_JSONL=logs/<experiment>-trajectories.jsonl bash scripts/nq_hotpotqa_p1/build_reference_steps.sh" >&2
+    echo "Generate it first with train_grpo.sh or another rollout that writes reward_model.trajectory_dump_path." >&2
+    exit 1
+fi
+
+if [[ ! -f "$TRAJECTORY_JSONL" ]]; then
+    echo "TRAJECTORY_JSONL does not exist: $TRAJECTORY_JSONL" >&2
+    echo "Run a trajectory-producing smoke run first. For P1 GRPO, train_grpo.sh writes:" >&2
+    echo "  logs/<experiment>-trajectories.jsonl" >&2
     exit 1
 fi
 
