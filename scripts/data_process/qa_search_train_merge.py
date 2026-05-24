@@ -42,6 +42,28 @@ If you find no further external knowledge needed, you can directly provide the a
     return prefix
 
 
+def output_features():
+    return datasets.Features({
+        "data_source": datasets.Value("string"),
+        "prompt": [{
+            "role": datasets.Value("string"),
+            "content": datasets.Value("string"),
+        }],
+        "ability": datasets.Value("string"),
+        "reward_model": {
+            "style": datasets.Value("string"),
+            "ground_truth": {
+                "target": datasets.Sequence(datasets.Value("string")),
+                "reference_steps": datasets.Sequence(datasets.Value("string")),
+            },
+        },
+        "extra_info": {
+            "split": datasets.Value("string"),
+            "index": datasets.Value("int64"),
+        },
+    })
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_dir', default='./data/nq_search')
@@ -107,7 +129,11 @@ if __name__ == '__main__':
 
             return process_fn
 
-        train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True)
+        train_dataset = train_dataset.map(
+            function=make_map_fn('train'),
+            with_indices=True,
+            features=output_features(),
+        )
         all_dataset.append(train_dataset)
 
     local_dir = args.local_dir

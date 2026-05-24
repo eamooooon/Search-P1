@@ -529,3 +529,22 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 重新运行 data process 后，继续用 `check_reference_steps.sh` 看 `reference_available_ratio` 和 examples。
+
+## 2026-05-24 - 修复空 reference_steps 被推断为 list<null>
+
+- 现象：
+  - 每条样本都写入 `reference_steps` 后，data process 仍在约 10% 处报错：
+    - `Couldn't cast array of type string to null`
+- 根因：
+  - 未命中 reference 的样本写入 `reference_steps=[]`。
+  - HuggingFace Datasets / Arrow 看到前面大量空列表时，会把该字段推断成 `list<null>`。
+  - 后续遇到真正的 `list<string>` reference steps 时，无法从 string cast 到 null。
+- 调整：
+  - `qa_search_train_merge.py` 和 `qa_search_test_merge.py` 为 `Dataset.map()` 显式传入输出 `Features`。
+  - `reward_model.ground_truth.reference_steps` 被固定声明为 `Sequence(Value("string"))`。
+  - 这样空列表和非空字符串列表共享同一个稳定 schema。
+- 验证：
+  - 通过 `python -m py_compile scripts/data_process/qa_search_train_merge.py scripts/data_process/qa_search_test_merge.py`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 如果后续再给 `ground_truth` 增加字段，也要同步更新 `output_features()`，避免 Arrow 再次中途推断。
