@@ -452,6 +452,8 @@ def test_require_search_true_blocks_malformed_tool_call_shaping():
         "search(Albert Einstein birthplace)",
         "tool_call search Albert Einstein birthplace",
         "tool_call: search(Albert Einstein birthplace)",
+        "search-P1",
+        "query-MIob",
         '{"query": "Albert Einstein birthplace"}',
     ],
 )
@@ -475,6 +477,19 @@ def test_search_query_quality_gate_blocks_pseudo_tool_calls(tool_call):
     assert components["self_consistency"] == 0.0
     assert components["track_a_bonus"] == 0.0
     assert components["base_score"] == 0
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        "Search-P1 paper contribution",
+        "Q-learning algorithm",
+        "Spider-Man actor",
+        "COVID-19 symptoms",
+    ],
+)
+def test_search_query_quality_gate_allows_informative_hyphenated_queries(tool_call):
+    assert qa_em_format.is_valid_search_query(tool_call) is True
 
 
 def test_require_search_true_keeps_structure_shaping_with_legal_tool_call():

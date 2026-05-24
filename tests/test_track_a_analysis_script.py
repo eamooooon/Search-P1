@@ -27,6 +27,16 @@ Step 1: Search Albert Einstein birthplace.
 <answer>Ulm</answer>"""
 
 
+LOW_INFO_TOOL_CALL_TRAJECTORY = """<|im_start|>assistant
+<plan>
+Step 1: Search Search-P1 paper contribution.
+</plan>
+<reasoning>I emit a low-information pseudo query.</reasoning>
+<tool_call>search-P1</tool_call>
+<reasoning>Now answer.</reasoning>
+<answer>wrong</answer>"""
+
+
 INTENT_INSTANTIATED_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search [identified actress] character in The Honeymooners.
@@ -87,7 +97,36 @@ def test_track_a_analysis_script_outputs_summary(tmp_path):
     assert summary["planner_valid_rate"] == 1.0
     assert summary["failure_counts"]["complete"] == 1
     assert summary["failure_counts"]["no_actions"] == 1
+    assert payload["action_quality"]["total_tool_calls"] == 2
+    assert payload["action_quality"]["counts"]["plain_query"] == 2
     assert payload["buckets"] == []
+
+
+def test_track_a_analysis_script_reports_action_quality_counts(tmp_path):
+    jsonl_path = tmp_path / "quality.jsonl"
+    rows = [
+        {"solution_str": PERFECT_TRAJECTORY},
+        {"solution_str": LOW_INFO_TOOL_CALL_TRAJECTORY},
+    ]
+    jsonl_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/analysis/track_a_self_consistency.py",
+            str(jsonl_path),
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    action_quality = json.loads(result.stdout)["action_quality"]
+    assert action_quality["total_tool_calls"] == 3
+    assert action_quality["counts"]["plain_query"] == 2
+    assert action_quality["counts"]["low_info_search_prefix"] == 1
 
 
 def test_track_a_analysis_script_tail_and_bucket_json_output(tmp_path):
@@ -295,6 +334,7 @@ def test_track_a_analysis_script_bucket_text_output_includes_all_failure_counts(
     )
 
     assert "bucket=0" in result.stdout
+    assert "Action quality:" in result.stdout
     for reason in (
         "complete",
         "no_actions",

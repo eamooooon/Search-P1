@@ -395,3 +395,46 @@
   - v14 重点看 `has_search` 和 `self_consistency` 是否短期下降但更可信。
   - 如果 `bare_search` / `search_prefix` 明显下降，同时 `plain_query` 占比上升，说明 action-clean gate 生效。
   - 如果 `base_score` 仍无改善，再考虑降低 Track A 权重到 `0.02`，或引入更严格的 action informativeness / outcome-aware gate。
+
+## 2026-05-24 - v14 action-clean gate log observation
+
+- 现象：
+  - v14 训练集 `self_consistency mean = 0.074`，低于 v13 原口径，但高于用 v13 dump 离线套新 gate 的 `0.067`。
+  - 训练后段仍明显上升：step 1-5 约 `0.013`，step 16-19 约 `0.209`；val 约 `0.379`。
+  - `has_search` 被 gate 压到训练集约 `0.291`，但同样随训练推进从约 `0.112` 升到 `0.511`。
+  - action 内容分布显示模型仍大量输出裸 `search`，但 plain query 随训练增加：step 1-5 plain `689` / bare `2897`，step 16-19 plain `2468` / bare `697`。
+- 根因：
+  - v14 gate 没有阻断学习；它把旧的伪工具调用从 reward 信号中清掉，使早期分数下降。
+  - 模型仍在迁移格式习惯，部分输出从裸 `search` 转为 `Search ...` 前缀或 `search(...)`，这些仍被判非法。
+  - 少量 `plain_query` 仍是低信息字符串，如 `search-P1`、`search-MIob`，说明仅靠 prefix gate 还不能完全保证 query informativeness。
+- 调整：
+  - 暂不提高 Track A 权重；v14 说明 0.05 已能推动 action 质量迁移。
+  - 下一步优先考虑继续保留 v14 gate，并观察更长 run 或加强 prompt 中 plain query 的正例。
+  - 如果需要 v15，可以增加低信息 query 规则，例如拒绝 `search-...` 这类只有搜索词缀但无自然语言实体/属性的内容。
+- 验证：
+  - v14 dump 共 `22656` 条，其中 train `21888`、val `768`。
+  - train complete `1386`，val complete `248`；complete 轨迹仍大多 `base_score=0`，说明 Track A 仍主要改善路径，不直接改善答案正确性。
+- 后续观察：
+  - 比较 v15 时重点看 `plain_query / total tool_call`、`bare_search`、`search_prefix`、`base_score` 是否同步改善。
+  - 如果 `base_score` 持续不动，需要引入 outcome-aware gate 或降低 Track A 权重，避免路径分压过答案分。
+
+## 2026-05-24 - v15 low-information search-prefix query gate
+
+- 现象：
+  - v14 的 `plain_query` 增加是好趋势，但抽样里出现了 `search-P1`、`search-MIob` 这类低信息内容。
+  - 这些内容没有违反 v14 的裸 `search`、`Search ...`、`search(...)`、JSON 或嵌套 tag 规则，因此会被当作合法 plain query。
+- 根因：
+  - 模型正在从旧的 action 习惯迁移，可能把 `search` 当成词缀拼到随机 token 或任务名上。
+  - 简单禁止所有连字符会误伤合法实体，如 `Q-learning algorithm`、`Spider-Man actor`、`COVID-19 symptoms`。
+- 调整：
+  - 只拒绝整体形如 `search-xxx` / `query-xxx` 且没有空格的短伪 query。
+  - 保留信息量更高的连字符 query，例如 `Search-P1 paper contribution`、`Q-learning algorithm`、`Spider-Man actor`。
+  - rollout parser 和 reward parser 同步应用该规则，避免训练环境和 reward 口径不一致。
+  - 训练 dump 路径切到 `tracka-v15-low-info-query-gate-20steps.jsonl`。
+  - analysis 脚本增加 action quality 汇总，直接输出 `plain_query`、`bare_search`、`search_prefix`、`low_info_search_prefix`、`function_search` 等分布，减少每次诊断都临时写脚本。
+  - 数据 prompt 同步提示不要输出短 `search-xxx` / `query-xxx` 伪 query；若重跑 `scripts/nq_hotpotqa_p1/data_process.sh`，新 parquet 会带上该约束。
+- 验证：
+  - 增加伪 query negative cases：`search-P1`、`query-MIob`。
+  - 增加合法连字符 positive cases：`Search-P1 paper contribution`、`Q-learning algorithm`、`Spider-Man actor`、`COVID-19 symptoms`。
+- 后续观察：
+  - v15 dump 重点看 `plain_query` 中低信息 `search-*` / `query-*` 是否消失，同时确认合法 hyphenated entity 没有被误伤。

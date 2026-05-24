@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from collections import Counter, deque
 from importlib import util
@@ -23,6 +24,21 @@ TRACK_A_KEYS = (
     "self_n_plan",
     "self_n_actions",
     "self_n_exec",
+)
+
+ACTION_QUALITY_REASONS = (
+    "plain_query",
+    "bare_search",
+    "search_prefix",
+    "low_info_search_prefix",
+    "function_search",
+    "tool_call_prefix",
+    "tool_response_text",
+    "nested_tag",
+    "json_like",
+    "url",
+    "overlong",
+    "empty",
 )
 
 
@@ -73,6 +89,48 @@ def get_solution_str(row: dict):
         if isinstance(value, str) and value.strip():
             return value
     return None
+
+
+def extract_assistant_content(text: str):
+    marker = "<|im_start|>assistant"
+    if marker in text:
+        return text.rsplit(marker, 1)[1].split("<|im_end|>", 1)[0]
+    return text
+
+
+def extract_model_tool_calls(text: str):
+    content = extract_assistant_content(text)
+    content = re.sub(r"<tool_response>.*?</tool_response>", "", content, flags=re.DOTALL)
+    return [match.strip() for match in re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)]
+
+
+def classify_tool_call_content(query: str):
+    query = query.strip() if query else ""
+    if not query:
+        return "empty"
+    if re.search(r"</?[^>]+>", query):
+        return "nested_tag"
+    if re.search(r"https?://|www\.", query, re.IGNORECASE):
+        return "url"
+    if len(query.split()) > 32:
+        return "overlong"
+    if re.fullmatch(r"(?:query|search)", query, re.IGNORECASE):
+        return "bare_search"
+    if re.fullmatch(r"(?:search|query)-[^\s]+", query, re.IGNORECASE):
+        return "low_info_search_prefix"
+    if re.search(r"\btool_call\s*:?\s*search\b|^\s*tool_call\b", query, re.IGNORECASE):
+        return "tool_call_prefix"
+    if re.search(r"\bsearch\s*\(", query, re.IGNORECASE):
+        return "function_search"
+    if re.search(r"\btool_response\s*:", query, re.IGNORECASE):
+        return "tool_response_text"
+    if re.search(r"^\s*(?:query|search)\s*:?\s+(?!engine\b)", query, re.IGNORECASE):
+        return "search_prefix"
+    if (query.startswith("{") and query.endswith("}")) or (
+        query.startswith("[") and query.endswith("]")
+    ):
+        return "json_like"
+    return "plain_query"
 
 
 def normalize_ground_truth(row: dict):
@@ -135,6 +193,7 @@ def snippet(text: str, max_chars: int):
 def analyze_rows(rows, reward_module, match_strategy: str, max_plan_steps: Optional[int], low_score_threshold: float, sample_size: int):
     records = []
     failure_counts = Counter()
+    action_quality_counts = Counter()
     low_samples = []
     missing_solution = 0
 
@@ -143,6 +202,8 @@ def analyze_rows(rows, reward_module, match_strategy: str, max_plan_steps: Optio
         if solution_str is None:
             missing_solution += 1
             continue
+        for tool_call in extract_model_tool_calls(solution_str):
+            action_quality_counts[classify_tool_call_content(tool_call)] += 1
 
         components = reward_module.compute_self_consistency_components(
             solution_str,
@@ -173,7 +234,7 @@ def analyze_rows(rows, reward_module, match_strategy: str, max_plan_steps: Optio
         if components["self_consistency"] <= low_score_threshold and len(low_samples) < sample_size:
             low_samples.append(record)
 
-    return records, failure_counts, low_samples, missing_solution
+    return records, failure_counts, action_quality_counts, low_samples, missing_solution
 
 
 def summarize(records: list[dict], failure_counts: Counter):
@@ -201,6 +262,17 @@ def summarize(records: list[dict], failure_counts: Counter):
     summary["mean_action_efficiency"] = mean(action_efficiency) if action_efficiency else 0.0
     summary["failure_counts"] = {reason: failure_counts.get(reason, 0) for reason in FAILURE_REASONS}
     return summary
+
+
+def summarize_action_quality(action_quality_counts: Counter):
+    total = sum(action_quality_counts.values())
+    return {
+        "total_tool_calls": total,
+        "counts": {
+            reason: action_quality_counts.get(reason, 0)
+            for reason in ACTION_QUALITY_REASONS
+        },
+    }
 
 
 def bucket_failure_counts(records: list[dict]):
@@ -257,6 +329,7 @@ def print_buckets(buckets: list[dict]):
 
 def print_summary(
     summary: dict,
+    action_quality: dict,
     low_samples: list[dict],
     missing_solution: int,
     max_chars: int,
@@ -280,6 +353,13 @@ def print_summary(
     print("Failure attribution:")
     for reason, count in sorted(summary["failure_counts"].items()):
         print(f"  {reason}: {count}")
+
+    print("")
+    print("Action quality:")
+    print(f"  total_tool_calls: {action_quality['total_tool_calls']}")
+    for reason, count in action_quality["counts"].items():
+        if count:
+            print(f"  {reason}: {count}")
 
     print_buckets(buckets)
 
@@ -332,7 +412,7 @@ def main(argv=None):
         for line_number, row in iter_jsonl(path, limit=args.limit, tail=args.tail):
             rows.append((f"{path}:{line_number}", row))
 
-    records, failure_counts, low_samples, missing_solution = analyze_rows(
+    records, failure_counts, action_quality_counts, low_samples, missing_solution = analyze_rows(
         rows,
         reward_module=reward_module,
         match_strategy=args.match_strategy,
@@ -341,12 +421,29 @@ def main(argv=None):
         sample_size=args.sample_size,
     )
     summary = summarize(records, failure_counts)
+    action_quality = summarize_action_quality(action_quality_counts)
     buckets = build_buckets(records, args.bucket_size)
 
     if args.json:
-        print(json.dumps({"summary": summary, "buckets": buckets, "missing_solution": missing_solution}, ensure_ascii=False, indent=2))
+        print(json.dumps(
+            {
+                "summary": summary,
+                "action_quality": action_quality,
+                "buckets": buckets,
+                "missing_solution": missing_solution,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
     else:
-        print_summary(summary, low_samples, missing_solution, max_chars=args.snippet_chars, buckets=buckets)
+        print_summary(
+            summary,
+            action_quality,
+            low_samples,
+            missing_solution,
+            max_chars=args.snippet_chars,
+            buckets=buckets,
+        )
 
     return 0 if records else 1
 

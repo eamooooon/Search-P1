@@ -29,6 +29,7 @@ _MALFORMED_TOOL_CALL_CONTENT_PATTERN = re.compile(
     r"\btool_response\s*:|^\s*(?:query|search)\s*:?\s+(?!engine\b)",
     re.IGNORECASE,
 )
+_LOW_INFORMATION_SEARCH_PREFIX_PATTERN = re.compile(r"^(?:search|query)-[^\s]+$", re.IGNORECASE)
 _MATCH_STOPWORDS = {
     "a",
     "an",
@@ -329,6 +330,8 @@ def is_valid_search_query(query):
     if re.search(r"</?[^>]+>", query):
         return False
     if re.fullmatch(r"(?:query|search)", query, re.IGNORECASE):
+        return False
+    if _LOW_INFORMATION_SEARCH_PREFIX_PATTERN.fullmatch(query):
         return False
     if _MALFORMED_TOOL_CALL_CONTENT_PATTERN.search(query):
         return False
