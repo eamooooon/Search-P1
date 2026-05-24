@@ -23,4 +23,4 @@ fi
 : "${LLM_MODEL:?LLM_MODEL is required. Put it in .env.llm/.env or set it in the environment.}"
 
 cd "$WORK_DIR"
-python -m search_p1.analysis.test_reference_llm_connection
+python -m search_p1.analysis.test_reference_llm_connection "$@"

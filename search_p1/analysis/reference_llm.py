@@ -92,6 +92,8 @@ def run_llm_voting(requests,
             continue
         processed += 1
 
+        content = None
+        parsed = None
         for attempt in range(max_retries):
             try:
                 content = chat_completion(
@@ -124,6 +126,10 @@ def run_llm_voting(requests,
                         "error": str(exc),
                         "attempts": max_retries,
                     }
+                    if content is not None:
+                        failure["raw_content"] = content
+                    if parsed is not None:
+                        failure["parsed_response"] = parsed
                     if on_failure is not None:
                         on_failure(failure)
                     print(f"failed custom_id={custom_id}: {exc}", flush=True)

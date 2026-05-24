@@ -470,3 +470,23 @@ Track B 必看字段：
 - 后续观察：
   - 如果连通测试 `status=OK`，再跑 `run_reference_llm_voting.sh`。
   - 如果 `CONNECTED_BUT_NO_VALID_REFERENCE_STEPS`，优先查看 raw response 决定是改 prompt、改 parser，还是换模型。
+
+## 2026-05-24 - 支持复现真实 LLM voting 失败样本
+
+- 现象：
+  - 单样本连通测试返回 `status=OK`，但批量 `run_reference_llm_voting.sh` 仍出现 `LLM response has no valid reference_steps`。
+  - 这说明 provider/model 连通没问题，失败来自某些真实 vote request 的内容或模型对该请求的返回格式。
+- 根因：
+  - 原连通测试只使用固定 toy prompt，不能代表真实 `reference_vote_requests.jsonl` 中的复杂候选 action。
+  - 批量失败记录只写 error，没有保存 raw response 和 parsed response，无法判断 validator 为什么拒绝。
+- 调整：
+  - `run_llm_voting()` 在失败记录中写入 `raw_content` 和 `parsed_response`。
+  - `test_reference_llm_connection.py` 支持 `--vote_requests`、`--custom_id`、`--request_index`，可直接复现真实失败样本。
+  - bash wrapper 改为透传 CLI 参数。
+  - README 增加按 `custom_id` replay 真实 voting request 的命令。
+- 验证：
+  - 通过 `python -m py_compile search_p1/analysis/test_reference_llm_connection.py search_p1/analysis/reference_llm.py`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 对失败样本先运行 replay 命令，看 raw response；如果只是字段名或嵌套结构不同，优先增强 parser；如果内容质量差，再调整 prompt。

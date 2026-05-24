@@ -100,6 +100,14 @@ bash scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh
 The connectivity test prints the raw model response, parsed JSON, validated
 `reference_steps`, and a final status.
 
+To replay a real voting request, pass the request file and `custom_id`:
+
+```bash
+bash scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh \
+  --vote_requests data/nq_hotpotqa_p1/reference_vote_requests.jsonl \
+  --custom_id 'id|hotpotqa|train|46035'
+```
+
 `LLM_LIMIT` is optional and is useful for the first smoke test. The voting
 script writes three observable files by default:
 

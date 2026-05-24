@@ -4,6 +4,7 @@ import os
 import sys
 import urllib.error
 
+from search_p1.analysis.reference_io import read_jsonl
 from search_p1.analysis.reference_llm import (
     chat_completion,
     extract_json_object,
@@ -37,6 +38,18 @@ def _sample_messages():
     ]
 
 
+def _load_vote_request(path, custom_id=None, request_index=0):
+    rows = list(read_jsonl(path))
+    if custom_id is not None:
+        for row in rows:
+            if row.get("custom_id") == custom_id:
+                return row
+        raise ValueError(f"custom_id not found in {path}: {custom_id}")
+    if request_index < 0 or request_index >= len(rows):
+        raise ValueError(f"request_index out of range: {request_index}, rows={len(rows)}")
+    return rows[request_index]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=os.environ.get("LLM_MODEL"))
@@ -45,6 +58,9 @@ def main():
     parser.add_argument("--temperature", type=float, default=float(os.environ.get("LLM_TEMPERATURE", "0")))
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("LLM_TIMEOUT", "120")))
     parser.add_argument("--max_reference_steps", type=int, default=int(os.environ.get("MAX_REFERENCE_STEPS", "4")))
+    parser.add_argument("--vote_requests", default=None)
+    parser.add_argument("--custom_id", default=None)
+    parser.add_argument("--request_index", type=int, default=0)
     args = parser.parse_args()
 
     if not args.api_key:
@@ -54,14 +70,28 @@ def main():
 
     print(f"base_url={args.base_url}")
     print(f"model={args.model}")
-    print("request=sample reference voting prompt")
+    if args.vote_requests:
+        request = _load_vote_request(
+            args.vote_requests,
+            custom_id=args.custom_id,
+            request_index=args.request_index,
+        )
+        messages = request["messages"]
+        print(f"request=vote_requests file: {args.vote_requests}")
+        print(f"custom_id={request.get('custom_id')}")
+        if request.get("metadata"):
+            print("metadata:")
+            print(json.dumps(request["metadata"], ensure_ascii=False, indent=2))
+    else:
+        messages = _sample_messages()
+        print("request=sample reference voting prompt")
 
     try:
         content = chat_completion(
             args.base_url,
             args.api_key,
             args.model,
-            _sample_messages(),
+            messages,
             args.temperature,
             args.timeout,
         )
