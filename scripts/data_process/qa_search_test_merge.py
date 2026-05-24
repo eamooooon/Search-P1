@@ -142,6 +142,7 @@ if __name__ == '__main__':
         test_dataset = test_dataset.map(
             function=make_map_fn('test'),
             with_indices=True,
+            remove_columns=test_dataset.column_names,
             features=output_features(),
         )
         all_dataset.append(test_dataset)

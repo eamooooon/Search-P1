@@ -548,3 +548,24 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 如果后续再给 `ground_truth` 增加字段，也要同步更新 `output_features()`，避免 Arrow 再次中途推断。
+
+## 2026-05-24 - 修复 data_process 原始列残留导致 KeyError
+
+- 现象：
+  - 给 `Dataset.map()` 显式传入 `features` 后，data process 又报 `KeyError: 'id'`。
+- 根因：
+  - `features` 只声明了我们希望输出的新列。
+  - HuggingFace Datasets 默认会保留原始数据集列；FlashRAG 原始列里有 `id` 等字段。
+  - 原始列被保留下来后，Arrow writer 会尝试在 `features` 中查找 `id`，但 `output_features()` 没声明该列。
+- 调整：
+  - `qa_search_train_merge.py` 和 `qa_search_test_merge.py` 的 `map()` 同时设置：
+    - `remove_columns=<dataset>.column_names`
+    - `features=output_features()`
+  - 这样输出 parquet 只包含训练需要的新字段，不混入原始数据集列。
+  - 新增本地最小测试，覆盖原始数据含 `id`、reference steps 同时有空列表和非空列表的 schema 场景。
+- 验证：
+  - 通过 `python -m py_compile scripts/data_process/qa_search_train_merge.py scripts/data_process/qa_search_test_merge.py tests/test_reference_steps_data_process.py`。
+  - 通过本地最小测试入口；当前本机缺少 `datasets` 时测试会跳过 Arrow 模拟，目标环境有 `datasets` 时会实际覆盖该场景。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 这类 data process 变更以后优先用本地 Dataset.from_list 模拟 Arrow schema，不再只依赖远端全量数据集暴露问题。

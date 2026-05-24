@@ -132,6 +132,7 @@ if __name__ == '__main__':
         train_dataset = train_dataset.map(
             function=make_map_fn('train'),
             with_indices=True,
+            remove_columns=train_dataset.column_names,
             features=output_features(),
         )
         all_dataset.append(train_dataset)
