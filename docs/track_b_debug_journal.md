@@ -510,3 +510,22 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 需要重新运行 `build_reference_steps.sh` 生成新的 `reference_vote_requests.jsonl`，旧文件里的空 question 不会自动修复。
+
+## 2026-05-24 - 修复 reference_steps 注入时 Arrow schema 不一致
+
+- 现象：
+  - 运行 `REFERENCE_STEPS_FILE=... bash scripts/nq_hotpotqa_p1/data_process.sh` 时，`datasets.map` 在约 10% 处报错：
+    - `Couldn't cast array of type struct<reference_steps: list<item: string>, target: list<item: string>> to {'target': List(Value('string'))}`
+- 根因：
+  - 前面的样本没有命中 reference，只返回 `ground_truth.target`。
+  - 后面某个样本命中 reference 后，`ground_truth` 新增 `reference_steps` 字段。
+  - HuggingFace Datasets / Arrow 已经根据前面样本推断出 schema 为 `{'target': List(string)}`，中途新增字段会导致 cast 失败。
+- 调整：
+  - `qa_search_train_merge.py` 和 `qa_search_test_merge.py` 每条样本都写 `ground_truth.reference_steps`。
+  - 未命中 reference 时写空列表 `[]`，命中时写具体 steps。
+  - 这样 `ground_truth` schema 从第一条样本开始就是稳定的。
+- 验证：
+  - 通过 `python -m py_compile scripts/data_process/qa_search_train_merge.py scripts/data_process/qa_search_test_merge.py scripts/data_process/reference_steps.py`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 重新运行 data process 后，继续用 `check_reference_steps.sh` 看 `reference_available_ratio` 和 examples。

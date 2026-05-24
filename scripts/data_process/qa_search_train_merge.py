@@ -75,9 +75,6 @@ if __name__ == '__main__':
                 if example['question'][-1] != '?':
                     example['question'] += '?'
                 question = make_prefix(example, template_type=args.template_type)
-                solution = {
-                    "target": example['golden_answers'],
-                }
                 reference_steps = lookup_reference_steps(
                     references,
                     data_source=data_source,
@@ -85,8 +82,10 @@ if __name__ == '__main__':
                     index=idx,
                     question=example['question'],
                 )
-                if reference_steps:
-                    solution["reference_steps"] = reference_steps
+                solution = {
+                    "target": example['golden_answers'],
+                    "reference_steps": reference_steps,
+                }
 
                 data = {
                     "data_source": data_source,
