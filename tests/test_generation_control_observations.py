@@ -191,6 +191,7 @@ def test_feedback_avoids_full_xml_pair_examples():
         manager.PLAN_ACCEPTED_OBSERVATION,
         manager._invalid_action_observation(False, "missing_plan"),
         manager._invalid_action_observation(True, "malformed_action_tag"),
+        manager._invalid_action_observation(True, "malformed_tool_call_content"),
     ]
 
     forbidden_pairs = [
@@ -201,3 +202,19 @@ def test_feedback_avoids_full_xml_pair_examples():
     for feedback in feedback_texts:
         for pair in forbidden_pairs:
             assert pair not in feedback
+
+
+def test_malformed_tool_call_feedback_teaches_plain_query_recovery():
+    manager = make_manager()
+    feedback = manager._invalid_action_observation(True, "malformed_tool_call_content")
+
+    assert "concrete plain query" in feedback
+    assert "Good query content: Albert Einstein birthplace." in feedback
+    for bad_content in [
+        "Bad query content: search;",
+        "Search Albert Einstein birthplace",
+        "search(Albert Einstein birthplace)",
+        "search-P1",
+        "query-MIob",
+    ]:
+        assert bad_content in feedback

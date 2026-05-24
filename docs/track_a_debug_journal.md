@@ -438,3 +438,24 @@
   - 增加合法连字符 positive cases：`Search-P1 paper contribution`、`Q-learning algorithm`、`Spider-Man actor`、`COVID-19 symptoms`。
 - 后续观察：
   - v15 dump 重点看 `plain_query` 中低信息 `search-*` / `query-*` 是否消失，同时确认合法 hyphenated entity 没有被误伤。
+
+## 2026-05-24 - v16 rollout feedback for clean query recovery
+
+- 现象：
+  - v15 新 run 后期 Track A 明显学习，`no_actions` 从约 500 降到几十，`complete` 上升到约 200，`self_consistency` 后期可到 `0.25+`。
+  - 但 `unmatched_actions` 仍是最大失败项，action quality 中仍有大量 `bare_search`、`search_prefix`、`low_info_search_prefix`、`function_search` 和 `nested_tag`。
+- 根因：
+  - parser / reward gate 已经能判错，但 invalid feedback 对模型来说还不够操作化。
+  - 模型知道当前 action 错了，却没有被明确示范下一次 `<tool_call>` 内部应该只写具体 query 内容。
+- 调整：
+  - 强化 `malformed_tool_call_content` 的 rollout feedback，直接给出 good / bad query content。
+  - good 示例只写内容本身：`Albert Einstein birthplace`。
+  - bad 示例覆盖当前高频错误：`search`、`Search Albert Einstein birthplace`、`search(Albert Einstein birthplace)`、`search-P1`、`query-MIob`。
+  - 不在 feedback 里放完整 XML 对，避免模型复制 `<tool_call>...</tool_call>` 占位示例。
+  - dump 路径切到 `tracka-v16-feedback-clean-query-20steps.jsonl`，避免和 v15 append 混写。
+- 验证：
+  - 增加 feedback 回归测试，确认包含 concrete plain query 指令、good 示例和高频 bad 示例。
+  - 保留 full XML pair 防复制测试。
+- 后续观察：
+  - v16 优先看 `bare_search`、`search_prefix`、`low_info_search_prefix`、`function_search` 是否下降。
+  - 如果 action quality 改善但 `unmatched_actions` 仍高，再考虑 matcher 或 plan/action intent 表达问题。

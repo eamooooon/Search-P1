@@ -746,8 +746,11 @@ class LLMGenerationManager:
             )
         elif reason == "malformed_tool_call_content":
             extra = (
-                " The search action content must be only the plain search query, with "
-                "no nested tags, tool names, search function syntax, JSON, or response text."
+                " The search action content must be a concrete plain query only. "
+                "Good query content: Albert Einstein birthplace. "
+                "Bad query content: search; Search Albert Einstein birthplace; "
+                "search(Albert Einstein birthplace); search-P1; query-MIob. "
+                "Do not include nested tags, tool names, JSON, or response text."
             )
         elif reason == "missing_action_tag":
             extra = (
