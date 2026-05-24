@@ -23,6 +23,10 @@ reference_llm = _load_module(
     "reference_llm",
     Path("search_p1") / "analysis" / "reference_llm.py",
 )
+reference_io = _load_module(
+    "reference_io",
+    Path("search_p1") / "analysis" / "reference_io.py",
+)
 trajectory_dump = _load_module(
     "trajectory_dump",
     Path("verl") / "trainer" / "trajectory_dump.py",
@@ -121,6 +125,20 @@ def test_vote_request_contains_candidate_actions():
     content = json.loads(request["messages"][1]["content"])
     assert content["question"] == "Who discovered radium?"
     assert content["candidate_actions"][0]["action"] == "Marie Curie discovery"
+
+
+def test_row_question_falls_back_to_solution_str_question_marker():
+    row = {
+        "solution_str": (
+            "<|im_start|>user\n"
+            "Answer the given question. Question: Who discovered radium?\n"
+            "<|im_end|>\n"
+            "<|im_start|>assistant\n"
+            "<plan>Search the discoverer.</plan>"
+        )
+    }
+
+    assert reference_io.row_question(row) == "Who discovered radium?"
 
 
 def test_valid_reference_steps_normalizes_llm_output():

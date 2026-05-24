@@ -1,4 +1,5 @@
 import json
+import re
 
 
 def read_jsonl(path):
@@ -32,6 +33,30 @@ def normalize_question(question):
     return question
 
 
+def _question_from_text(text):
+    if not isinstance(text, str):
+        return ""
+    matches = list(re.finditer(r"Question:\s*", text))
+    if not matches:
+        return ""
+    start = matches[-1].end()
+    tail = text[start:]
+    stop_candidates = [
+        pos for pos in [
+            tail.find("<|im_end|>"),
+            tail.find("<|assistant|>"),
+            tail.find("<|im_start|>assistant"),
+            tail.find("<plan>"),
+            tail.find("<reasoning>"),
+            tail.find("<tool_call>"),
+            tail.find("<answer>"),
+        ] if pos != -1
+    ]
+    if stop_candidates:
+        tail = tail[:min(stop_candidates)]
+    return normalize_question(tail)
+
+
 def row_question(row):
     question = row.get("question")
     if question:
@@ -40,9 +65,12 @@ def row_question(row):
     prompt = row.get("prompt")
     if isinstance(prompt, list) and prompt:
         content = prompt[-1].get("content", "") if isinstance(prompt[-1], dict) else ""
-        marker = "Question:"
-        if marker in content:
-            return normalize_question(content.rsplit(marker, 1)[-1])
+        question = _question_from_text(content)
+        if question:
+            return question
+    question = _question_from_text(solution_str(row))
+    if question:
+        return question
     return ""
 
 

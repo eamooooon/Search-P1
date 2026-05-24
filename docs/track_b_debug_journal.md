@@ -490,3 +490,23 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 对失败样本先运行 replay 命令，看 raw response；如果只是字段名或嵌套结构不同，优先增强 parser；如果内容质量差，再调整 prompt。
+
+## 2026-05-24 - 修复 vote request 中 question 为空
+
+- 现象：
+  - 单样本连通测试正常，但 replay 真实 `reference_vote_requests.jsonl` 时，失败样本 metadata 显示 `"question": ""`。
+  - 模型对真实样本返回 `{"reference_steps": []}`，因此 validator 报 `CONNECTED_BUT_NO_VALID_REFERENCE_STEPS`。
+- 根因：
+  - LLM voting 的真实请求依赖 `reference_io.row_question()` 提供 question。
+  - trajectory dump 中可能没有可直接读取的 `prompt` 字段，或 prompt 结构不是普通 list[dict]。
+  - 原逻辑只从 `row.question` 或 `prompt[-1].content` 中找 `Question:`，没有从完整 `solution_str` 兜底解析。
+- 调整：
+  - `row_question()` 新增从 `solution_str` 兜底解析最后一个 `Question:` 的逻辑。
+  - 解析时会在 `<|im_end|>`、assistant marker、`<plan>`、`<reasoning>`、`<tool_call>`、`<answer>` 前截断，避免把后续轨迹内容拼进 question。
+  - 新增测试覆盖从 `solution_str` 提取 question。
+- 验证：
+  - 通过 `python -m py_compile search_p1/analysis/reference_io.py tests/test_reference_building.py`。
+  - 通过手动调用 `test_row_question_falls_back_to_solution_str_question_marker`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 需要重新运行 `build_reference_steps.sh` 生成新的 `reference_vote_requests.jsonl`，旧文件里的空 question 不会自动修复。
