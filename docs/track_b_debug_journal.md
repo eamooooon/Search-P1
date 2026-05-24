@@ -1,132 +1,404 @@
 # Track B / Reference-Alignment 工程复盘日志
 
-本文档用于记录 Track B 相关更新的工程复盘。后续每次修改都追加一条记录，固定格式为：时间 / 现象 / 根因 / 调整 / 验证 / 后续观察。
-
-重点写清楚：
-
-- 遇到了什么问题。
-- 为什么会发生。
-- 本次怎么解决。
-- 用什么方式验证。
-- 后续还需要观察什么。
+本文档记录 Track B 每版修改中的问题、根因、调整、验证和后续观察。
 
 ## 当前状态快照
 
-- 已明确：
-  - Track B 是 reference-alignment，不是 self-consistency。
-  - Track B 第一版只做旁路观测，不改变 scalar reward。
-  - Track B scorer 只读取 actions 和 `ground_truth.reference_steps`。
-  - Track B 不读取模型 `<plan>`，也不依赖 Track A 的 `self_*` 字段。
-  - `R_path = max(S_self, S_ref)` 属于后续组合层，不属于 Track B scorer 第一版。
-- 待实现：
-  - `reference_steps` 数据契约落地。
-  - reference plan 离线生成脚本：拒绝采样 + LLM voting + validator。
-  - `compute_reference_alignment_components`。
-  - Track B analysis 脚本。
-  - trajectory dump 的中立字段设计，避免写死 `track_a` 或 `track_b`。
-- 风险：
-  - 当前代码中已有 Track A / `path_bonus` 相关实现痕迹，后续实现 Track B 时需要先清理边界，避免耦合。
-  - `reference_steps` 质量如果不稳定，`S_ref` 会变成噪声。
-  - matcher 如果过宽，会奖励无意义 query stuffing；如果过窄，会低估有效搜索。
+- Track B scorer 已接入 reward components，但不改变 scalar reward。
+- Track B 数据入口已支持从 JSONL 注入 `ground_truth.reference_steps`。
+- 拒绝采样 + LLM voting 离线构建工具已放入 `search_p1.analysis`。
+- P1 目录下已有 bash wrapper：
+  - `scripts/nq_hotpotqa_p1/build_reference_steps.sh`
+  - `scripts/nq_hotpotqa_p1/check_reference_steps.sh`
+- 下一步重点是用真实 trajectory JSONL 生成 `reference_steps.jsonl`，再重新跑 10-step smoke test。
 
-## 2026-05-20 - Track B 初始设计文档
+## 下一步决策依据
+
+后续不要只看“脚本是否跑完”，要按下面这些日志信号决定下一步。
+
+### 1. 拒绝采样日志
+
+来源：
+
+```bash
+TRAJECTORY_JSONL=logs/trajectories.jsonl \
+bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
+```
+
+脚本会在 stdout 打印 JSON stats，重点看：
+
+- `total_rows`：输入 trajectory 总数。
+- `correct_rows`：最终答案 EM 正确的 trajectory 数。
+- `groups`：成功按 question / id 聚合出的样本组数。
+- `skipped_no_key`：没有可用 question / id，无法生成 reference 的行数。
+- `skipped_correct_no_actions`：答案正确但没有合法 search action 的行数。
+- `reference_rows`：最终生成 reference plan 的样本数。
+- `llm_vote_rows`：读回的 LLM voting 结果数。
+
+决策：
+
+- `total_rows = 0`：先检查 trajectory dump 路径和格式。
+- `correct_rows = 0`：不要跑 LLM voting，先检查答案抽取 / EM 判断 / rollout 质量。
+- `skipped_no_key` 很高：先修 trajectory dump 的 `question`、`data_source`、`split`、`index` 字段。
+- `skipped_correct_no_actions` 很高：先检查 `<tool_call>` 格式和 search action validator。
+- `reference_rows = 0`：先降低 `MIN_SUCCESSFUL` / 检查 consensus 阈值，或者直接跑 LLM voting。
+- `llm_vote_rows = 0` 且 `reference_plan_source` 多为 `consensus`：只能作为 smoke test，不作为正式 Track B reference。
+
+### 2. LLM voting 运行日志
+
+来源：
+
+```bash
+bash scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh
+```
+
+主要文件：
+
+- `data/nq_hotpotqa_p1/reference_llm_voting.log`
+- `data/nq_hotpotqa_p1/reference_vote_results.jsonl`
+- `data/nq_hotpotqa_p1/reference_vote_failures.jsonl`
+
+日志重点看：
+
+- `progress processed=... success=... failures=... skipped=... rate=.../s`
+- 最终 JSON summary 中的 `vote_requests`、`vote_rows`、`failures`、`skipped`
+- failures JSONL 中的 `error` 类型
+
+决策：
+
+- `failures / vote_requests` 很高：先看 `reference_vote_failures.jsonl`，通常是 key/base_url/model、超时、返回非 JSON、没有合法 `reference_steps`。
+- `skipped` 很高且 `vote_rows` 没增长：说明 resume 生效，若想重跑设置 `LLM_RESUME=0` 或换输出文件。
+- `vote_rows` 正常增长：继续跑更大的 `LLM_LIMIT` 或全量。
+- 返回经常 “no valid reference_steps”：先改 prompt / validator，不要急着进 data process。
+
+### 3. reference 注入检查日志
+
+来源：
+
+```bash
+REFERENCE_STEPS_FILE=data/nq_hotpotqa_p1/reference_steps.jsonl \
+bash scripts/nq_hotpotqa_p1/data_process.sh
+
+bash scripts/nq_hotpotqa_p1/check_reference_steps.sh
+```
+
+`check_reference_steps.sh` 会分别检查 train / test parquet，重点看：
+
+- `rows`
+- `reference_available`
+- `reference_available_ratio`
+- `mean_reference_steps`
+- `examples`
+
+决策：
+
+- `reference_available_ratio = 0`：不要跑训练，说明 reference 没注入进去；检查 JSONL key 是否和 parquet 的 `data_source/split/index/question` 对得上。
+- `reference_available_ratio` 很低：可以跑小样本 smoke，但不能解释正式 Track B 指标。
+- `mean_reference_steps = 0`：reference 清洗把 steps 全过滤了，检查 step 长度、tag、URL、空字符串。
+- `examples` 正常展示 steps：可以进入 10-step training smoke test。
+
+### 4. 训练 / 验证日志
+
+来源：GRPO 训练 stdout / wandb / swanlab 中的 reward 和 env metrics。
+
+Track B 必看字段：
+
+- `val/reward/reference_alignment/mean`
+- `val/reward/reference_alignment/max`
+- `val/reward/ref_available/mean`
+- `val/reward/ref_n_steps/mean`
+- `val/reward/ref_n_actions/mean`
+- `val/reward/ref_n_covered/mean`
+- `val/reward/path_bonus/mean`
+- `val/reward/final_score/mean`
+
+格式和环境必看字段：
+
+- `val/env/invalid_action/ratio`
+- `val/env/action_reason/valid_search/ratio`
+- `val/env/action_reason/valid_plan/ratio`
+- `val/env/action_reason/missing_action_tag/ratio`
+- `val/env/action_reason/duplicate_plan/ratio`
+
+决策：
+
+- `ref_available/mean = 0`：问题在数据注入，不在 scorer。
+- `ref_available/mean > 0` 但 `reference_alignment/mean = 0`：检查 matcher、search query 质量、reference 抽象层级。
+- `ref_n_actions/mean = 0`：模型没有发合法 search，先修 trajectory/action 格式。
+- `ref_n_covered/mean = 0` 但 `valid_search/ratio` 正常：优先人工抽样检查 reference 与 action 是否语义层级不一致。
+- `path_bonus/mean = 0` 且 `final_score = base_score`：符合当前 Track B observation 设计；Track B 尚未进入 reward。
+- `invalid_action/ratio` 很高：先修 Planner/Search/Answer 格式，不要用当前 run 判断 Track B 好坏。
+
+### 5. 下一步状态机
+
+按顺序推进：
+
+1. 没有 trajectory JSONL：先跑能落盘 trajectory 的 rollout / smoke。
+2. 有 trajectory，但 `correct_rows = 0`：先修答案抽取或提升 rollout 质量。
+3. 有正确 trajectory，但 `reference_rows = 0`：先修 action extraction / consensus / LLM voting。
+4. 有 `reference_steps.jsonl`，但 `reference_available_ratio = 0`：先修 data_process 注入 key。
+5. `reference_available_ratio > 0`，但 `reference_alignment = 0`：先做样本级 matcher 诊断。
+6. `reference_alignment` 有非零分布，且 invalid action 不高：再讨论是否进入 `R_path = max(S_self, S_ref)`。
+
+## 2026-05-20 - Track B 初始设计
 
 - 现象：
-  - 当前分支准备开始实现 Track B，但需要先明确它和 Track A 的边界。
-  - Track A 文档中已经强调 self-consistency 只比较 planner 与 action，不读取 reference plan。
-  - Track B 如果从 Track A 代码或最新实验状态直接延伸，容易把 `planner`、`self_consistency`、`path_bonus` 混入 reference-alignment。
+  - 需要实现 Track B，但不能和 Track A 的 planner self-consistency 耦合。
 - 根因：
-  - 双轨路径评分有共同的 matcher 和 trajectory parser，但两个 track 的参照物不同。
-  - Track A 的参照物是模型自己的 `<plan>`；Track B 的参照物是外部 `reference_steps`。
-  - 如果不先写清楚接口边界，后续实现很容易为了复用代码而引入语义耦合。
+  - Track A 的参照物是模型自己的 `<plan>`。
+  - Track B 的参照物是外部 `reference_steps`。
 - 调整：
-  - 新增 `docs/track_b_reference_alignment_plan.md`，定义 Track B 的目标、公式、数据契约、离线 reference plan 生成流程、scorer 接口、metrics 和验收标准。
-  - 新增本日志文件，要求后续每版修改都记录问题和解决方案。
-  - 明确 Track B 第一版保持 `final_score = existing_score`，只记录 `reference_alignment` 及组件。
-  - 明确 Track B scorer 不读取 `<plan>`，Track A scorer 不读取 `reference_steps`。
+  - 明确 Track B scorer 不读取 `<plan>`。
+  - 明确第一版只做 observation，不改 `final_score`。
 - 验证：
-  - 文档层面已对齐 Track A 的设计风格：先做 observation，再决定是否进入 reward composition。
-  - 文档层面已明确双轨聚合只能在后续组合层完成：`R_path = max(S_self, S_ref)`。
+  - 设计文档记录了 `S_ref` 公式、数据契约和边界。
 - 后续观察：
-  - 实现前先检查当前分支中 Track A 相关代码残留，决定哪些 parser / matcher 可抽为中立工具。
-  - 先实现离线 analysis 和 metrics，确认 `reference_steps` 与 matcher 质量，再考虑是否接入 reward。
+  - 双轨组合必须单独设计，不要塞进 Track B scorer。
 
 ## 2026-05-20 - Track B scorer 旁路观测接入
 
 - 现象：
-  - 需要根据设计文档开始落地 Track B，但当前 reward 代码只有 `self_consistency` 和 `path_bonus` 相关组件。
-  - Track B 第一版必须能在没有合法 planner 的情况下计算 `S_ref`，并且不能改变 scalar reward。
+  - reward 代码原先只有 `self_consistency` / `path_bonus`。
 - 根因：
-  - Track B 的参照物是 `ground_truth.reference_steps`，不是模型 `<plan>`。
-  - 如果直接复用 Track A 的 `compute_self_consistency_score`，会把 planner 合法性误作为 reference-alignment 的前置条件。
+  - 缺少 reference-alignment components。
 - 调整：
-  - 在 `qa_em_format.py` 中新增 `extract_reference_steps`、`validate_reference_steps`、`reference_step_matches_action`、`count_reference_covered_steps` 和 `compute_reference_alignment_components`。
-  - `compute_score_components` 新增返回 `reference_alignment`、`ref_available`、`ref_n_steps`、`ref_n_actions`、`ref_n_covered`。
-  - `main_ppo_format.py` 和 `ray_trainer.py` 透出 Track B metrics。
-  - 新增 `reward_model.max_reference_steps` 配置项，默认 `null`，保持兼容。
-  - 新增最小测试覆盖无 planner、缺失 reference、重复 action、非法 reference、以及 `final_score` 不受 Track B 影响。
+  - 在 `qa_em_format.py` 中新增 reference step 提取、校验、匹配和 `compute_reference_alignment_components`。
+  - 在 trainer metrics 中透出 `reference_alignment`、`ref_available`、`ref_n_steps`、`ref_n_actions`、`ref_n_covered`。
+  - 新增 `reward_model.max_reference_steps`。
 - 验证：
-  - `python -m pytest tests/test_track_b_reference_alignment.py -q` 未运行成功：当前本机 Python 环境缺少 `pytest`。
-  - 由于当前本机 Python 环境也缺少 `numpy`，测试文件改为按路径加载 `qa_em_format.py`，避免导入 `verl.__init__` 时被全仓库依赖阻塞。
-  - 通过 `python -c "...调用 tests/test_track_b_reference_alignment.py 中所有 test_* 函数..."` 验证 Track B 断言。
-  - 通过 `python -m py_compile verl/utils/reward_score/qa_em_format.py verl/trainer/main_ppo_format.py verl/trainer/ppo/ray_trainer.py tests/test_track_b_reference_alignment.py`。
-  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+  - 手动 runner 调用 Track B 测试断言通过。
+  - `py_compile` 通过。
+  - `git diff --check` 通过。
 - 后续观察：
-  - 当前 Track B matcher 使用保守 lexical 规则；后续需要用真实 dump 检查是否低估 reference coverage。
-  - 当前 `path_bonus` 仍是既有 Track A 口径，Track B 没有进入 reward composition；后续如启用双轨，需要单独设计组合层。
+  - 当前 `path_bonus` 仍是既有 Track A 口径，Track B 没有进入 reward composition。
 
-## 2026-05-20 - GRPO 启动脚本补充 Track B 观测配置
+## 2026-05-20 - GRPO 启动脚本补充 Track B 配置
 
 - 现象：
-  - Track B scorer 和 metrics 已接入，但 `scripts/nq_hotpotqa_p1/train_grpo.sh` 没有显式传入 Track B 相关配置。
-  - 实验名仍是 `plan-format`，不容易从日志路径判断本次 run 是否包含 Track B observation。
+  - `train_grpo.sh` 没有显式传入 Track B 观测配置。
 - 根因：
-  - 第一版代码只改了默认配置和 trainer 透传，遗漏了项目实际使用的 GRPO 启动脚本。
-  - 虽然 `ppo_trainer.yaml` 中已有默认值，但训练脚本是实验可复现入口，应显式记录关键开关。
+  - 只改默认 config 不够，项目实际入口是 P1 bash 脚本。
 - 调整：
-  - 将 `EXPERIMENT_NAME` 后缀改为 `trackb-observe`。
-  - 在脚本中显式设置 `reward_model.path_reward_weight=0`，强调 Track B 第一版不改变 scalar reward。
-  - 显式设置 `reward_model.path_match_strategy=lexical`。
-  - 显式设置 `reward_model.max_reference_steps=4`，与 `max_turns=4` 对齐。
+  - 实验名加 `trackb-observe-10steps`。
+  - 设置 `reward_model.path_reward_weight=0`。
+  - 设置 `reward_model.path_match_strategy=lexical`。
+  - 设置 `reward_model.max_reference_steps=4`。
 - 验证：
-  - `bash -n scripts/nq_hotpotqa_p1/train_grpo.sh` 未运行成功：当前 Windows/WSL Bash 启动被 `E_ACCESSDENIED` 拦截。
-  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+  - `git diff --check` 通过。
 - 后续观察：
-  - 如果训练数据还没有 `ground_truth.reference_steps`，`reference_alignment` 会稳定为 `0.0` 且 `ref_available=0.0`；下一步需要实现 reference plan 数据生成或注入。
+  - 该脚本用于 smoke test，不是完整训练配置。
 
 ## 2026-05-20 - Track B 诊断 run 收敛到 10 step
 
 - 现象：
-  - `train_grpo.sh` 仍按 `trainer.total_epochs=1` 和完整 `data.train_data_num=null` 运行，实际会跑完整训练集。
-  - `val_before_train=true` 会在训练前先跑验证，进一步拉长 Track B smoke test。
+  - 原脚本会跑完整 epoch，成本太高。
 - 根因：
-  - 第一版 Track B 只是验证 `reference_alignment` metrics 是否打通，不需要完整 epoch。
-  - 当前训练数据很可能还没有 `ground_truth.reference_steps`，长跑也只会得到大量 `ref_available=0`，诊断价值有限。
+  - Track B 第一版只需要验证 metrics wiring，不需要训练收敛。
 - 调整：
-  - 将实验名后缀改为 `trackb-observe-10steps`。
-  - 设置 `trainer.total_training_steps=10`。
-  - 设置 `data.train_data_num=3840`，按 `train_batch_size=384` 对齐 10 个训练 batch。
-  - 设置 `data.val_data_num=256`，限制最终验证规模。
-  - 设置 `trainer.val_before_train=false`，跳过训练前验证。
-  - 设置 `trainer.save_freq=999999`、`trainer.test_freq=999999`，避免中途 checkpoint / test 干扰。
+  - `trainer.total_training_steps=10`。
+  - `data.train_data_num=3840`。
+  - `data.val_data_num=256`。
+  - `trainer.val_before_train=false`。
+  - `trainer.save_freq=999999`、`trainer.test_freq=999999`。
 - 验证：
-  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+  - `git diff --check` 通过。
 - 后续观察：
-  - 10-step run 只用于确认 Track B metrics wiring；如果 `ref_available` 全为 0，下一步优先补 reference plan 数据生成，而不是延长训练 step。
+  - 如果 `ref_available=0`，不要延长训练，先补 reference 数据。
 
-## 后续追加模板
-
-```md
-## YYYY-MM-DD - 标题
+## 2026-05-20 - reference_steps 数据注入入口
 
 - 现象：
-  - 
+  - val 输出 `ref_available=0`、`ref_n_steps=0`。
 - 根因：
-  - 
+  - parquet 里只有 `ground_truth.target`，没有 `ground_truth.reference_steps`。
 - 调整：
-  - 
+  - 新增 `scripts/data_process/reference_steps.py`。
+  - `qa_search_train_merge.py` / `qa_search_test_merge.py` 支持 `--reference_steps_file`。
+  - `data_process.sh` 支持 `REFERENCE_STEPS_FILE` 和 `MAX_REFERENCE_STEPS`。
+  - 新增 reference 覆盖率检查能力。
 - 验证：
-  - 
+  - 手动 runner 调用 reference data process 测试通过。
+  - `py_compile` 通过。
+  - `git diff --check` 通过。
 - 后续观察：
-  - 
-```
+  - 训练前必须先检查 `reference_available_ratio`。
+
+## 2026-05-20 - 拒绝采样 + LLM voting 离线构建
+
+- 现象：
+  - 已有数据注入入口，但还没有从 rollout trajectory 生成 `reference_steps.jsonl` 的工具。
+- 根因：
+  - Reference plan 应来自离线流程，不应在 reward-time 调 LLM。
+- 调整：
+  - 新增 `search_p1.analysis.build_reference_steps`。
+  - 用 EM 做拒绝采样，只保留答案正确且包含合法 `<tool_call>` 的轨迹。
+  - 导出 provider-agnostic LLM voting request JSONL。
+  - 支持读回 LLM voting result JSONL。
+  - 没有 LLM result 时，用保守 consensus fallback 生成 smoke-test reference plan。
+- 验证：
+  - 手动 runner 调用 `tests/test_reference_building.py` 通过。
+  - `py_compile` 通过。
+  - `git diff --check` 通过。
+- 后续观察：
+  - consensus fallback 只适合端到端 smoke test，正式实验优先用 LLM voting 输出。
+
+## 2026-05-20 - P1 bash 入口补齐
+
+- 现象：
+  - Python 工具已有，但 P1 实验目录下没有对应 bash 入口。
+- 根因：
+  - 工程实际 workflow 通过 `scripts/nq_hotpotqa_p1/*.sh` 启动。
+- 调整：
+  - 新增 `scripts/nq_hotpotqa_p1/build_reference_steps.sh`。
+  - 新增 `scripts/nq_hotpotqa_p1/check_reference_steps.sh`。
+  - README 改为统一使用 bash wrapper。
+- 验证：
+  - `bash -n scripts/nq_hotpotqa_p1/build_reference_steps.sh` 通过。
+  - `bash -n scripts/nq_hotpotqa_p1/check_reference_steps.sh` 通过。
+  - `bash -n scripts/nq_hotpotqa_p1/data_process.sh` 通过。
+  - `git diff --check` 通过。
+- 后续观察：
+  - P1 wrapper 只编排文件输入输出，不把具体 LLM provider 写死进训练入口。
+
+## 2026-05-20 - analysis Python 位置修正
+
+- 现象：
+  - `build_reference_steps.py` 和 `check_reference_steps.py` 最初放在 scripts 下的分析目录，不符合当前工程组织。
+- 根因：
+  - `scripts` 应主要放实验入口；Search-P1 相关 Python 逻辑应在 `search_p1` 包下。
+- 调整：
+  - 将两个 Python 模块迁移到 `search_p1/analysis/`。
+  - bash wrapper 改为 `python -m search_p1.analysis.*`。
+  - 测试路径和文档同步更新。
+- 验证：
+  - 通过显式文件列表 `python -m py_compile`。
+  - 手动 runner 调用 `tests/test_reference_building.py`、`tests/test_reference_steps_data_process.py`、`tests/test_track_b_reference_alignment.py` 通过。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 后续新增 Track B 分析 Python 代码优先放在 `search_p1/analysis`。
+
+## 2026-05-20 - OpenAI-compatible LLM voting 入口
+
+- 现象：
+  - 已经能生成 `reference_vote_requests.jsonl`，但还没有仓库内的 LLM voting 调用入口。
+  - `api-key`、`base_url`、`model` 没有明确放置位置。
+- 根因：
+  - 之前只做了 provider-agnostic 文件接口，还没补具体 API 调用层。
+- 调整：
+  - 新增 `search_p1.analysis.run_reference_llm_voting`。
+  - 新增 `scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh`。
+  - 使用环境变量传入敏感和可变配置：
+    - `LLM_API_KEY`
+    - `LLM_BASE_URL`
+    - `LLM_MODEL`
+    - `LLM_LIMIT`
+  - 不把 key 写进代码或配置文件。
+- 验证：
+  - 通过 `python -m py_compile search_p1/analysis/run_reference_llm_voting.py search_p1/analysis/build_reference_steps.py search_p1/analysis/check_reference_steps.py`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/build_reference_steps.sh`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/check_reference_steps.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 第一次建议用 `LLM_LIMIT=100` 或 `200` 做 smoke test，确认 JSON 输出稳定后再全量跑。
+
+## 2026-05-20 - analysis 模块职责拆分
+
+- 现象：
+  - `build_reference_steps.py` 同时承担拒绝采样、voting request、voting result 合并和 consensus fallback，CLI 文件过重。
+  - `run_reference_llm_voting.py` 里也混着 API 调用、响应解析、step 校验和 CLI 参数。
+- 根因：
+  - 第一版优先把链路打通，导致实现集中在少数脚本里，读起来像一锅粥。
+- 调整：
+  - 新增 `reference_io.py`：统一 JSONL 读写、question/key/metadata 提取。
+  - 新增 `reward_format.py`：隔离对 `qa_em_format.py` 的按路径加载。
+  - 新增 `reference_sampling.py`：只负责拒绝采样和正确轨迹分组。
+  - 新增 `reference_voting.py`：只负责 consensus、vote request、LLM vote 读回和 reference rows 生成。
+  - 新增 `reference_llm.py`：只负责 OpenAI-compatible API 调用、JSON 响应解析和 LLM 输出 step 校验。
+  - `build_reference_steps.py` 和 `run_reference_llm_voting.py` 变成薄 CLI 编排层。
+  - 测试改为 `tests/test_reference_building.py`，直接测拆出来的模块。
+- 验证：
+  - 通过显式文件列表 `python -m py_compile`。
+  - 手动 runner 调用 `tests/test_reference_building.py`、`tests/test_reference_steps_data_process.py`、`tests/test_track_b_reference_alignment.py` 通过。
+  - `bash -n` 已覆盖 P1 wrapper。
+  - `git diff --check` 通过。
+- 后续观察：
+  - 后续如果接入具体 LLM provider SDK，也应放到新模块，不让 CLI 再变厚。
+
+## 2026-05-20 - LLM voting 可观测性补强
+
+- 现象：
+  - `run_reference_llm_voting` 只有最终 summary，长跑时看不到进度、失败样本和中间结果。
+  - bash 脚本里一度有 `LLM_API_KEY=...` 这类占位，容易覆盖外部环境变量，也容易诱导把真 key 写进脚本。
+- 根因：
+  - 第一版只验证 API 调用闭环，缺少长任务运行时的观测和恢复机制。
+- 调整：
+  - voting 成功一条就 append 到 `reference_vote_results.jsonl`，不等进程结束。
+  - 失败写入 `reference_vote_failures.jsonl`。
+  - 每 `LLM_PROGRESS_EVERY` 条打印一次进度。
+  - 默认 resume：跳过结果文件里已经存在的 `custom_id`。
+  - bash 脚本支持 `LLM_ENV_FILE`，但不再内置 key/base_url/model 占位。
+  - bash 脚本默认写 `reference_llm_voting.log`。
+- 验证：
+  - 待运行测试和语法检查。
+- 后续观察：
+  - 第一次跑 100-200 条时，重点看 log 里的 failure rate 和 failures JSONL 的错误类型。
+
+## 2026-05-23 - LLM 配置改为自动读取 .env
+
+- 现象：
+  - 运行 LLM voting 时需要 `api-key`、`base_url`、`model`，但每次命令行手动传容易漏，也不适合写进脚本。
+- 根因：
+  - 这些配置是运行时 secret / endpoint，不应该进 YAML 或 git tracked 文件。
+- 调整：
+  - `run_reference_llm_voting.sh` 默认先读取仓库根目录 `.env.llm`，找不到再读取 `.env`。
+  - 仍支持 `LLM_ENV_FILE=...` 显式指定配置文件。
+  - 使用 `set -a` source env 文件，支持 `LLM_API_KEY=...` 和 `export LLM_API_KEY=...` 两种写法。
+  - env 文件先于脚本默认值加载，确保 `.env.llm` / `.env` 可以覆盖 `LLM_LIMIT`、`LLM_LOG`、输出路径等运行参数。
+  - `.gitignore` 新增 `.env` / `.env.*`，保留 `!.env.example`。
+  - 新增 `.env.example`，只记录占位配置，不包含真实 key。
+- 验证：
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 不要把真实 key 写入 README、脚本或 tracked config。
+
+## 2026-05-23 - 补充下一步日志决策依据
+
+- 现象：
+  - 已有每版修改日志，但缺少“后续根据哪些运行日志决定下一步”的操作层判断。
+  - 只写“后续观察”不够，下一轮容易不知道该先看 LLM voting、data injection、还是训练 metrics。
+- 根因：
+  - Track B 链路跨越 trajectory dump、拒绝采样、LLM voting、reference 注入、训练验证多个阶段；每个阶段的失败信号不同。
+- 调整：
+  - 在本文档顶部新增“下一步决策依据”。
+  - 明确 4 类日志来源：
+    - `build_reference_steps.sh` stdout stats。
+    - `reference_llm_voting.log` / `reference_vote_results.jsonl` / `reference_vote_failures.jsonl`。
+    - `check_reference_steps.sh` 输出。
+    - 训练 / 验证 reward 与 env metrics。
+  - 补充状态机：从 trajectory 是否存在，到 `reference_alignment` 是否有非零分布，再到是否能讨论双轨 reward。
+- 验证：
+  - 文档已覆盖当前可观测字段：`correct_rows`、`reference_rows`、`vote_rows`、`failures`、`reference_available_ratio`、`ref_available/mean`、`reference_alignment/mean`、`invalid_action/ratio`。
+- 后续观察：
+  - 如果后续脚本新增字段或改名，必须同步更新“下一步决策依据”，否则日志会再次变成只能复盘、不能指导下一步。
+
+## 2026-05-24 - 明确两次 build_reference_steps 的覆盖语义
+
+- 现象：
+  - `build_reference_steps.sh` 在第一次生成 voting request、第二次读回 LLM votes 时使用同一个脚本，容易误解为重复构建或无意识覆盖。
+  - 原脚本第二次带 `LLM_VOTES_FILE` 时仍会默认重写 `reference_vote_requests.jsonl`。
+- 根因：
+  - 两次 build 的输入不同：第一次只有 `TRAJECTORY_JSONL`，第二次是 `TRAJECTORY_JSONL + LLM_VOTES_FILE`。
+  - 第二次的核心目标是重写最终 `reference_steps.jsonl`，不是重新生成 voting request。
+- 调整：
+  - `build_reference_steps.sh` 新增 `WRITE_VOTE_REQUESTS` 控制。
+  - 未设置 `LLM_VOTES_FILE` 时，默认 `WRITE_VOTE_REQUESTS=1`，生成 `reference_vote_requests.jsonl`。
+  - 设置 `LLM_VOTES_FILE` 时，默认 `WRITE_VOTE_REQUESTS=0`，只根据 LLM votes 重建 `reference_steps.jsonl`。
+  - README 补充两次 build 的输入、输出和覆盖语义。
+- 验证：
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/build_reference_steps.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 如果后续希望完全避免覆盖 fallback reference，可把第一次输出设为 `REFERENCE_STEPS_OUTPUT=.../reference_steps_consensus.jsonl`，第二次输出设为 `.../reference_steps.jsonl`。

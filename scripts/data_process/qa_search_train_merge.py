@@ -21,6 +21,7 @@ import datasets
 
 from verl.utils.hdfs_io import copy, makedirs
 import argparse
+from reference_steps import load_reference_steps, lookup_reference_steps
 
 
 def make_prefix(dp, template_type):
@@ -47,8 +48,14 @@ if __name__ == '__main__':
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--template_type', type=str, default='base')
     parser.add_argument('--data_sources', default='nq')
+    parser.add_argument('--reference_steps_file', default=None)
+    parser.add_argument('--max_reference_steps', type=int, default=None)
 
     args = parser.parse_args()
+    references = load_reference_steps(
+        args.reference_steps_file,
+        max_reference_steps=args.max_reference_steps,
+    )
 
     # data_source = 'nq'
     data_sources = args.data_sources.split(',')
@@ -71,6 +78,15 @@ if __name__ == '__main__':
                 solution = {
                     "target": example['golden_answers'],
                 }
+                reference_steps = lookup_reference_steps(
+                    references,
+                    data_source=data_source,
+                    split=split,
+                    index=idx,
+                    question=example['question'],
+                )
+                if reference_steps:
+                    solution["reference_steps"] = reference_steps
 
                 data = {
                     "data_source": data_source,
