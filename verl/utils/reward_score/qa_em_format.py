@@ -24,6 +24,11 @@ _STEP_LINE_PATTERN = re.compile(
 )
 _TAG_PATTERN = re.compile(r"</?[^>]+>")
 _URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
+_MALFORMED_TOOL_CALL_CONTENT_PATTERN = re.compile(
+    r"\btool_call\s*:?\s*search\b|^\s*tool_call\b|\bsearch\s*\(|"
+    r"\btool_response\s*:|^\s*(?:query|search)\s*:?\s+(?!engine\b)",
+    re.IGNORECASE,
+)
 _MATCH_STOPWORDS = {
     "a",
     "an",
@@ -318,9 +323,18 @@ def compute_self_consistency_components(solution_str, match_strategy="lexical", 
 
 
 def is_valid_search_query(query):
-    if not query or not query.strip():
+    query = query.strip() if query else ""
+    if not query:
         return False
     if re.search(r"</?[^>]+>", query):
+        return False
+    if re.fullmatch(r"(?:query|search)", query, re.IGNORECASE):
+        return False
+    if _MALFORMED_TOOL_CALL_CONTENT_PATTERN.search(query):
+        return False
+    if (query.startswith("{") and query.endswith("}")) or (
+        query.startswith("[") and query.endswith("]")
+    ):
         return False
     if _URL_PATTERN.search(query):
         return False

@@ -442,6 +442,41 @@ def test_require_search_true_blocks_malformed_tool_call_shaping():
     assert components["base_score"] == 0
 
 
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        "search",
+        "query",
+        "Search Albert Einstein birthplace",
+        "query: Albert Einstein birthplace",
+        "search(Albert Einstein birthplace)",
+        "tool_call search Albert Einstein birthplace",
+        "tool_call: search(Albert Einstein birthplace)",
+        '{"query": "Albert Einstein birthplace"}',
+    ],
+)
+def test_search_query_quality_gate_blocks_pseudo_tool_calls(tool_call):
+    trajectory = MALFORMED_TOOL_CALL_TRAJECTORY.replace(
+        "https://example.com/einstein",
+        tool_call,
+    )
+    components = qa_em_format.compute_score_components(
+        trajectory,
+        {"target": ["Ulm"]},
+        structure_format_score=0.2,
+        final_format_score=0.1,
+        retrieval_score=0.1,
+        require_search_for_format=True,
+        self_consistency_weight=0.05,
+    )
+
+    assert qa_em_format.is_valid_search_query(tool_call) is False
+    assert components["has_search"] is False
+    assert components["self_consistency"] == 0.0
+    assert components["track_a_bonus"] == 0.0
+    assert components["base_score"] == 0
+
+
 def test_require_search_true_keeps_structure_shaping_with_legal_tool_call():
     components = qa_em_format.compute_score_components(
         PERFECT_TRAJECTORY,

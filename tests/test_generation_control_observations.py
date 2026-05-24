@@ -132,15 +132,24 @@ def test_malformed_tool_call_content_is_reported_separately():
             "<tool_call>tool_call: search(France capital)</tool_call>",
             "<reasoning>Need evidence.</reasoning>"
             "<tool_call>tool_response: Doc text</tool_call>",
+            "<reasoning>Need evidence.</reasoning>"
+            "<tool_call>search</tool_call>",
+            "<reasoning>Need evidence.</reasoning>"
+            "<tool_call>Search France capital</tool_call>",
+            "<reasoning>Need evidence.</reasoning>"
+            "<tool_call>tool_call search France capital</tool_call>",
         ],
-        planner_seen=[True, True],
-        active_mask=[True, True],
+        planner_seen=[True, True, True, True, True],
+        active_mask=[True, True, True, True, True],
         return_reasons=True,
     )
 
-    assert actions == [None, None]
-    assert contents == ["", ""]
+    assert actions == [None, None, None, None, None]
+    assert contents == ["", "", "", "", ""]
     assert reasons == [
+        "malformed_tool_call_content",
+        "malformed_tool_call_content",
+        "malformed_tool_call_content",
         "malformed_tool_call_content",
         "malformed_tool_call_content",
     ]

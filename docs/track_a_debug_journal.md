@@ -369,3 +369,29 @@
   - Add tests for zero weight, perfect Track A bonus, partial Track A bonus, no-action zero bonus, and absence of `path_bonus`.
 - Follow-up observation:
   - Use `logs/$EXPERIMENT_NAME-tracka-v13-reward-20steps.jsonl` to compare whether a 0.05 Track A signal reduces `partial_plan_coverage` and unmatched action failures without destabilizing base reward behavior.
+
+## 2026-05-24 - v13 reward run diagnosis and v14 action quality gate
+
+- 现象：
+  - v13 接入 `self_consistency_weight=0.05` 后，Track A 信号明显生效：训练集 `self_consistency` 均值约从 v12 的 `0.039` 提升到 `0.137`，后段 window 提升到约 `0.391`。
+  - 但 `base_score` 仍很低，训练集均值约 `0.0025`；大量 complete self-consistent 样本仍是错误答案。
+  - complete 样本主要集中在 1-step planner，说明模型可能在学习“短 plan + 一个匹配 action”的 Track A 捷径，而不是稳定提升答案正确性。
+  - action 内容仍不干净，日志中有大量裸 `search`、`Search ...` 前缀、`search(...)`、`tool_call search ...`、嵌套标签或 JSON/function-call 风格内容。
+- 根因：
+  - Track A reward 已经给了路径自洽的正反馈，但合法 action 的质量边界不够一致。
+  - rollout parser 只拦住部分伪工具写法；reward parser 的 `is_valid_search_query` 更宽，可能把一些低质量 `<tool_call>` 当作合法 search 参与 `has_search` 和 self-consistency。
+  - 如果继续单纯提高 Track A 权重，模型会更容易优化格式/短路径分，而不是优化检索有效性和最终答案。
+- 调整：
+  - v14 不提高 `self_consistency_weight`，继续保持 `0.05`。
+  - 收紧 rollout parser 和 reward parser 的 action quality gate：裸 `search` / `query`、`Search ...` / `query: ...` 前缀、`search(...)`、`tool_call search ...`、`tool_call: search(...)`、`tool_response:`、JSON-like 内容都视为非法 search query。
+  - 保留 plain query，例如 `Albert Einstein birthplace` 仍是合法 `<tool_call>` 内容。
+  - 训练脚本 dump 路径切到 `logs/$EXPERIMENT_NAME-tracka-v14-action-clean-gate-20steps.jsonl`，避免和 v13 混写。
+- 验证：
+  - 增加 reward parser 回归测试，确认伪工具 `<tool_call>` 不产生 `has_search`、`self_consistency`、`track_a_bonus` 或格式 shaping。
+  - 扩展 rollout parser 测试，确认裸 `search`、`Search ...` 和 `tool_call search ...` 归入 `malformed_tool_call_content`。
+  - 用 v13 dump 离线重算新 gate，`self_consistency` 从约 `0.150` 降到 `0.067`，complete 从 `2718` 降到 `1297`；这说明 v13 中相当一部分 Track A 分来自低质量 action，新 gate 会先压低但净化信号。
+  - 本地已通过 `tests/test_track_a_self_consistency.py`；`tests/test_generation_control_observations.py` 在当前 Windows Python 环境因缺少 `torch` 无法收集，但相关文件已通过 `py_compile`。
+- 后续观察：
+  - v14 重点看 `has_search` 和 `self_consistency` 是否短期下降但更可信。
+  - 如果 `bare_search` / `search_prefix` 明显下降，同时 `plain_query` 占比上升，说明 action-clean gate 生效。
+  - 如果 `base_score` 仍无改善，再考虑降低 Track A 权重到 `0.02`，或引入更严格的 action informativeness / outcome-aware gate。

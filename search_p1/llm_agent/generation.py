@@ -573,9 +573,11 @@ class LLMGenerationManager:
             return "invalid_tool_call"
         if re.search(r"</?[^>]+>", query):
             return "malformed_tool_call_content"
+        if re.fullmatch(r"(?:query|search)", query, re.IGNORECASE):
+            return "malformed_tool_call_content"
         if re.search(
-            r"\btool_call\s*:\s*search\b|\bsearch\s*\(|\btool_response\s*:|"
-            r"^\s*(?:query|search)\s*:?\s+",
+            r"\btool_call\s*:?\s*search\b|^\s*tool_call\b|\bsearch\s*\(|"
+            r"\btool_response\s*:|^\s*(?:query|search)\s*:?\s+(?!engine\b)",
             query,
             re.IGNORECASE,
         ):
