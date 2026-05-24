@@ -90,6 +90,16 @@ Then run:
 bash scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh
 ```
 
+Before running the full voting file, test one sample request against the
+configured model:
+
+```bash
+bash scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh
+```
+
+The connectivity test prints the raw model response, parsed JSON, validated
+`reference_steps`, and a final status.
+
 `LLM_LIMIT` is optional and is useful for the first smoke test. The voting
 script writes three observable files by default:
 

@@ -449,3 +449,24 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 如果后续 dump 中出现不可 JSON 序列化的自定义对象，再统一在 `_to_jsonable()` 增加保守 fallback，而不是在 reward loop 里特殊处理。
+
+## 2026-05-24 - 新增 LLM voting 连通性测试
+
+- 现象：
+  - `run_reference_llm_voting.sh` 能调用到模型，但失败信息是 `LLM response has no valid reference_steps`。
+  - 仅看批量 voting 日志，无法区分是 API 不通、模型不支持 JSON mode、返回字段名不对，还是 prompt 约束不够。
+- 根因：
+  - 批量 voting 脚本为了长跑恢复和失败记录，只输出失败原因，不输出每次原始模型响应。
+  - 调试 provider / model 时需要一个单样本、可观察、低成本的连通性测试。
+- 调整：
+  - 新增 `search_p1.analysis.test_reference_llm_connection`。
+  - 新增 `scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh`，复用 `.env.llm` / `.env` 配置加载逻辑。
+  - 测试脚本打印 `base_url`、`model`、raw response、parsed JSON、validated `reference_steps` 和最终状态。
+  - README 补充在全量 LLM voting 前先跑连通性测试。
+- 验证：
+  - 通过 `python -m py_compile search_p1/analysis/test_reference_llm_connection.py search_p1/analysis/reference_llm.py`。
+  - 通过 `bash -n scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 如果连通测试 `status=OK`，再跑 `run_reference_llm_voting.sh`。
+  - 如果 `CONNECTED_BUT_NO_VALID_REFERENCE_STEPS`，优先查看 raw response 决定是改 prompt、改 parser，还是换模型。
