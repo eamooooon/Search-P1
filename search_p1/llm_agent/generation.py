@@ -23,10 +23,27 @@ class GenerationConfig:
     topk: int = 3
 
 class LLMGenerationManager:
+    CONTROL_OBSERVATION_REASONS = {
+        "valid_plan",
+        "missing_plan",
+        "duplicate_plan",
+        "missing_or_invalid_plan_steps",
+        "action_before_plan",
+        "missing_reasoning",
+        "invalid_tool_call",
+        "missing_action_tag",
+        "empty_prediction",
+        "malformed_action_tag",
+        "malformed_query_tag",
+        "malformed_legacy_tag",
+        "malformed_tool_call_content",
+        "unknown_invalid",
+    }
+
     PLAN_ACCEPTED_OBSERVATION = (
-        "\nPlan accepted. Do not output <plan> again. Now output exactly one "
-        "<reasoning>...</reasoning> followed by one <tool_call>...</tool_call> "
-        "or <answer>...</answer>.\n"
+        "\nPlan accepted. Do not output a plan block again. Now output exactly "
+        "one reasoning block followed by one tool_call block for search or one "
+        "answer block. Close the final block with </tool_call> or </answer>.\n"
     )
 
     def __init__(
@@ -290,9 +307,13 @@ class LLMGenerationManager:
             valid_search_stats += torch.tensor(is_search, dtype=torch.int)
 
             next_obs_ids = self._process_next_obs(next_obs)
-            next_obs_ids_for_final = self._mask_plan_only_observations_for_final_trajectory(
+            control_observation_mask = self._control_observation_mask_from_reasons(
+                action_reasons,
+                active_mask,
+            )
+            next_obs_ids_for_final = self._mask_control_observations_for_final_trajectory(
                 next_obs_ids,
-                plan_only_mask,
+                control_observation_mask,
             )
             
             # Update states
@@ -415,7 +436,7 @@ class LLMGenerationManager:
         if prediction[:plan_matches[0].start()].strip():
             return False
         if re.search(
-            r"</?(?:reasoning|tool_call|tool_response|answer|search|think|information)\b",
+            r"</?(?:reasoning|tool_call|tool_response|answer|query|tool_query|search|think|information)\b",
             plan_matches[0].group(1),
         ):
             return False
@@ -440,7 +461,7 @@ class LLMGenerationManager:
             return False
         post_plan = prediction[plan_match.end():]
         if re.search(
-            r"</?(?:plan|tool_call|tool_response|answer|search|think|information)\b",
+            r"</?(?:plan|tool_call|tool_response|answer|query|tool_query|search|think|information)\b",
             post_plan,
             re.DOTALL,
         ):
@@ -451,6 +472,12 @@ class LLMGenerationManager:
     def _plan_only_mask_from_reasons(self, reasons: List[str], active_mask) -> List[bool]:
         return [
             reason == "valid_plan" and self._mask_value_to_bool(active)
+            for reason, active in zip(reasons, active_mask)
+        ]
+
+    def _control_observation_mask_from_reasons(self, reasons: List[str], active_mask) -> List[bool]:
+        return [
+            reason in self.CONTROL_OBSERVATION_REASONS and self._mask_value_to_bool(active)
             for reason, active in zip(reasons, active_mask)
         ]
 
@@ -486,12 +513,22 @@ class LLMGenerationManager:
         next_obs_ids: torch.Tensor,
         plan_only_mask: List[bool],
     ) -> torch.Tensor:
-        if not any(plan_only_mask):
+        return self._mask_control_observations_for_final_trajectory(
+            next_obs_ids,
+            plan_only_mask,
+        )
+
+    def _mask_control_observations_for_final_trajectory(
+        self,
+        next_obs_ids: torch.Tensor,
+        control_observation_mask: List[bool],
+    ) -> torch.Tensor:
+        if not any(control_observation_mask):
             return next_obs_ids
 
         final_next_obs_ids = next_obs_ids.clone()
-        for row_idx, is_plan_only in enumerate(plan_only_mask):
-            if is_plan_only:
+        for row_idx, is_control_observation in enumerate(control_observation_mask):
+            if is_control_observation:
                 final_next_obs_ids[row_idx].fill_(self.tokenizer.pad_token_id)
         return final_next_obs_ids
 
@@ -528,15 +565,30 @@ class LLMGenerationManager:
         return self._has_single_reasoning_block(pre_action_text)
 
     def _is_valid_search_query(self, query: str) -> bool:
-        if not query or not query.strip():
-            return False
+        return self._tool_call_content_invalid_reason(query) is None
+
+    def _tool_call_content_invalid_reason(self, query: str) -> Optional[str]:
+        query = query.strip() if query else ""
+        if not query:
+            return "invalid_tool_call"
         if re.search(r"</?[^>]+>", query):
-            return False
+            return "malformed_tool_call_content"
+        if re.search(
+            r"\btool_call\s*:\s*search\b|\bsearch\s*\(|\btool_response\s*:|"
+            r"^\s*(?:query|search)\s*:?\s+",
+            query,
+            re.IGNORECASE,
+        ):
+            return "malformed_tool_call_content"
+        if (query.startswith("{") and query.endswith("}")) or (
+            query.startswith("[") and query.endswith("]")
+        ):
+            return "malformed_tool_call_content"
         if re.search(r"https?://|www\.", query, re.IGNORECASE):
-            return False
+            return "invalid_tool_call"
         if len(query.split()) > 32:
-            return False
-        return True
+            return "invalid_tool_call"
+        return None
 
     def _rollout_debug_sample_limit(self) -> int:
         raw_limit = os.environ.get("SEARCH_P1_ROLLOUT_DEBUG_SAMPLES", "0")
@@ -599,6 +651,21 @@ class LLMGenerationManager:
             return "duplicate_plan"
         return "missing_or_invalid_plan_steps"
 
+    def _malformed_action_tag_reason(self, prediction: str) -> str:
+        if re.search(
+            r"</?(?:query|tool_query)\b[^>]*>|(?:^|\s)/query\b",
+            prediction,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            return "malformed_query_tag"
+        if re.search(
+            r"</?(?:search|think|information)\b[^>]*>",
+            prediction,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            return "malformed_legacy_tag"
+        return "malformed_action_tag"
+
     def _invalid_action_context_reason(
         self,
         prediction: str,
@@ -618,8 +685,9 @@ class LLMGenerationManager:
             pre_action_text = prediction[plan_matches[0].end():match.start()]
 
         if not re.search(r"<reasoning>.*?</reasoning>", pre_action_text, re.DOTALL):
-            if re.search(r"</?(?:search|think|information)\b", pre_action_text, re.DOTALL):
-                return "malformed_action_tag"
+            malformed_reason = self._malformed_action_tag_reason(pre_action_text)
+            if malformed_reason != "malformed_action_tag":
+                return malformed_reason
             return "missing_reasoning"
         return "unknown_invalid"
 
@@ -629,35 +697,53 @@ class LLMGenerationManager:
         if has_planned and re.search(r"</?plan>", prediction):
             return "duplicate_plan"
         if re.search(
-            r"</?(tool_call|answer|search|think|information)\b[^>]*>",
+            r"</?(tool_call|answer|query|tool_query|search|think|information)\b[^>]*>",
             prediction,
             re.DOTALL,
         ):
-            return "malformed_action_tag"
+            return self._malformed_action_tag_reason(prediction)
+        if re.search(r"(?:^|\s)/query\b", prediction, re.DOTALL | re.IGNORECASE):
+            return "malformed_query_tag"
         return "missing_action_tag"
 
     def _invalid_action_observation(self, has_planned: bool, reason: str) -> str:
         if has_planned:
             base = (
-                "My previous action is invalid. A valid <plan> has already been accepted. "
-                "Do not output <plan> again. Output exactly one "
-                "<reasoning>...</reasoning> block followed by exactly one "
-                "<tool_call>...</tool_call> or <answer>...</answer> block."
+                "My previous action is invalid. A valid plan block has already been accepted. "
+                "Do not output a plan block again. Output exactly one reasoning block followed "
+                "by exactly one tool_call block or answer block. Close the final block with "
+                "</tool_call> or </answer>."
             )
         else:
             base = (
-                "My previous action is invalid. No valid <plan> has been accepted yet. "
-                "First output one complete <plan>...</plan> with numbered Search steps, "
-                "then output one <reasoning>...</reasoning> block followed by one "
-                "<tool_call>...</tool_call> or <answer>...</answer> block."
+                "My previous action is invalid. No valid plan block has been accepted yet. "
+                "First output one complete plan block with numbered Search steps, then output "
+                "one reasoning block followed by one tool_call block or answer block. Use the "
+                "<plan>, <reasoning>, <tool_call>, and <answer> tag names, and close the final "
+                "block with </tool_call> or </answer>."
             )
 
         extra = ""
         if reason == "malformed_action_tag":
             extra = (
-                " Old <search>, <think>, and <information> tags are deprecated; "
-                "the trajectory vocabulary is <reasoning>, <tool_call>, and "
-                "<tool_response>."
+                " Do not use query, search, think, or information tags. Use a tool_call "
+                "block for search; the trajectory vocabulary is plan, reasoning, "
+                "tool_call, tool_response, and answer."
+            )
+        elif reason == "malformed_query_tag":
+            extra = (
+                " Query-style tags and slash query commands are invalid. Use only the "
+                "current Search-P1 tool_call action name for search."
+            )
+        elif reason == "malformed_legacy_tag":
+            extra = (
+                " Legacy search, think, and information tags are invalid in Search-P1. "
+                "Use the current reasoning, tool_call, tool_response, and answer names."
+            )
+        elif reason == "malformed_tool_call_content":
+            extra = (
+                " The search action content must be only the plain search query, with "
+                "no nested tags, tool names, search function syntax, JSON, or response text."
             )
         elif reason == "missing_action_tag":
             extra = (
@@ -831,11 +917,14 @@ class LLMGenerationManager:
                         reason = self._invalid_action_context_reason(prediction, match, has_planned)
                         content = ''
                         action = None
-                    elif action == 'search' and not self._is_valid_search_query(content):
-                        if active:
-                            reason = "invalid_tool_call"
-                        content = ''
-                        action = None
+                    elif action == 'search':
+                        invalid_tool_call_reason = self._tool_call_content_invalid_reason(content)
+                        if not invalid_tool_call_reason:
+                            reason = f"valid_{action}"
+                        elif active:
+                            reason = invalid_tool_call_reason
+                            content = ''
+                            action = None
                     elif active:
                         reason = f"valid_{action}"
                 else:

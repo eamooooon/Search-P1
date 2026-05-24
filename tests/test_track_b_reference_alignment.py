@@ -30,6 +30,51 @@ def test_reference_alignment_does_not_require_planner():
     assert components["ref_n_covered"] == 1
 
 
+def test_tool_calls_inside_tool_response_are_ignored():
+    solution = (
+        "<tool_response>Doc says <tool_call>fake query</tool_call></tool_response>"
+        "<tool_call>Marie Curie Nobel Prize</tool_call>"
+    )
+
+    assert qa_em_format.extract_tool_calls(solution) == ["Marie Curie Nobel Prize"]
+
+
+def test_planner_block_requires_only_sequential_step_lines():
+    valid = (
+        "<plan>\n"
+        "Step 1: Search Marie Curie Nobel Prize\n"
+        "Step 2: Search radium discovery\n"
+        "</plan>"
+    )
+    extra_line = (
+        "<plan>\n"
+        "I will search first.\n"
+        "Step 1: Search Marie Curie Nobel Prize\n"
+        "</plan>"
+    )
+    skipped_number = (
+        "<plan>\n"
+        "Step 1: Search Marie Curie Nobel Prize\n"
+        "Step 3: Search radium discovery\n"
+        "</plan>"
+    )
+
+    assert qa_em_format.validate_planner_block(valid)
+    assert not qa_em_format.validate_planner_block(extra_line)
+    assert not qa_em_format.validate_planner_block(skipped_number)
+
+
+def test_extract_solution_accepts_single_answer_after_assistant_marker():
+    solution = (
+        "<|im_start|>assistant\n"
+        "<plan>\nStep 1: Search radium discovery\n</plan>"
+        "<reasoning>I know it.</reasoning><answer>Marie Curie</answer>"
+        "<|im_end|>"
+    )
+
+    assert qa_em_format.extract_solution(solution) == "Marie Curie"
+
+
 def test_missing_reference_steps_return_zero_components():
     solution = "<tool_call>Marie Curie Nobel Prize</tool_call>"
     ground_truth = {"target": ["radium"]}

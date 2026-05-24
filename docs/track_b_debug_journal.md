@@ -569,3 +569,23 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 这类 data process 变更以后优先用本地 Dataset.from_list 模拟 Arrow schema，不再只依赖远端全量数据集暴露问题。
+## 2026-05-24 - 从 plan-once 移植通用格式稳定化，保持 Track B 解耦
+
+- 现象：
+  - 当前 Track B reference 覆盖率很低，`correct_rows=12/815`，同时验证日志里 invalid action 比例很高。
+  - `plan-once` 后续提交里包含一些通用 format 修复，但也混有 Track A self-consistency 内容，不能整分支 cherry-pick。
+- 根因：
+  - Track B 依赖高质量 trajectory；如果模型持续输出 `<query>`、`<search>`、JSON/function-call 或把 feedback 写进最终轨迹，拒绝采样会天然拿不到足够正确样本。
+  - Track A 分支的部分修改属于基础轨迹格式稳定化，另一部分属于 Track A 指标和分析逻辑，必须手动筛选。
+- 调整：
+  - 只移植数据 prompt 的严格格式约束，保留 Track B 的 `reference_steps` 注入、`output_features()` 和 `remove_columns` 修复。
+  - `generation.py` 新增 control observation mask，把 plan accepted / invalid feedback 这类控制文本从最终 trajectory 中遮掉，但保留真实 `<tool_response>`。
+  - `generation.py` 细分 invalid reason：`malformed_query_tag`、`malformed_legacy_tag`、`malformed_tool_call_content`，方便后续从训练日志判断模型到底错在哪里。
+  - `qa_em_format.py` 修复 parser：忽略 `<tool_response>` 内伪造的 `<tool_call>`；Planner 只接受 front-loaded、连续编号、纯 Step 行；修复 assistant marker 下单个 `<answer>` 不能抽取的问题。
+  - 明确没有移植 Track A 的 `self_*` component、Track A 分析脚本、Track A 文档或 Track A 专属 reward 字段。
+- 验证：
+  - 新增 parser 测试覆盖 tool_response 中伪 tool_call、严格 Planner、assistant marker 单答案。
+  - 新增 generation 测试覆盖 control observation mask、legacy/query tag 分类、malformed tool_call content 分类。
+- 后续观察：
+  - 下一次 10-step smoke run 重点看 `invalid_action/ratio` 是否下降，以及 `action_reason/malformed_query_tag`、`malformed_legacy_tag`、`malformed_tool_call_content` 的分布。
+  - 如果 invalid action 下降但 `correct_rows` 仍很低，再扩大 `trajectory_dump_limit` 或增加 rollout 样本；不要先改 Track B matcher。

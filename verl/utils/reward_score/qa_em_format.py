@@ -19,8 +19,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 _STEP_LINE_PATTERN = re.compile(
-    r"(?:^|\n)\s*Step\s+\d+\s*:\s*Search\s+(.+?)(?=\n\s*Step\s+\d+\s*:\s*Search\s+|\Z)",
-    re.DOTALL | re.IGNORECASE,
+    r"^\s*Step\s+(\d+)\s*:\s*Search\s+(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 _TAG_PATTERN = re.compile(r"</?[^>]+>")
 _URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -107,12 +107,13 @@ def extract_plan_steps(text):
     if not match:
         return []
     plan_text = match.group(1)
-    steps = re.findall(_STEP_LINE_PATTERN, plan_text)
+    steps = [match.group(2).strip() for match in _STEP_LINE_PATTERN.finditer(plan_text)]
     return [step.strip() for step in steps if step.strip()]
 
 
 def extract_tool_calls(text):
     content = _extract_assistant_content(text)
+    content = re.sub(r"<tool_response>.*?</tool_response>", "", content, flags=re.DOTALL)
     matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
     return [match.strip() for match in matches]
 
@@ -127,6 +128,35 @@ def count_actions(text):
 
 def validate_planner_steps(steps):
     return bool(steps) and all(step and not _TAG_PATTERN.search(step) for step in steps)
+
+
+def _extract_plan_text(text):
+    content = _extract_assistant_content(text)
+    match = re.search(r"<plan>(.*?)</plan>", content, re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def _has_single_front_loaded_plan(text):
+    content = _extract_assistant_content(text)
+    if len(re.findall(r"<plan>", content)) != 1 or len(re.findall(r"</plan>", content)) != 1:
+        return False
+    return bool(re.match(r"^\s*<plan>.*?</plan>", content, re.DOTALL))
+
+
+def validate_planner_block(text, steps=None):
+    if steps is None:
+        steps = extract_plan_steps(text)
+    if not _has_single_front_loaded_plan(text) or not validate_planner_steps(steps):
+        return False
+
+    plan_text = _extract_plan_text(text)
+    nonempty_lines = [line for line in plan_text.splitlines() if line.strip()]
+    step_matches = list(_STEP_LINE_PATTERN.finditer(plan_text))
+    if len(nonempty_lines) != len(step_matches):
+        return False
+
+    step_numbers = [int(match.group(1)) for match in step_matches]
+    return step_numbers == list(range(1, len(step_numbers) + 1))
 
 
 def validate_actions(actions):
@@ -334,8 +364,8 @@ def is_valid_sequence(text):
         return False, "Multiple <plan> blocks are not allowed"
     if plan_count != 1:
         return False, "Missing required <plan> block"
-    if not extract_plan_steps(content):
-        return False, "Missing valid plan steps"
+    if not validate_planner_block(content):
+        return False, "Missing or invalid plan steps"
 
     split_pattern = r"(</?(?:plan|reasoning|tool_call|tool_response|answer)>)"
     parts = re.split(split_pattern, content)
@@ -394,7 +424,8 @@ def extract_solution(solution_str):
     """Extract the equation from the solution string."""
 
     assistant_marker = "<|im_start|>assistant"
-    if assistant_marker in solution_str:
+    has_assistant_marker = assistant_marker in solution_str
+    if has_assistant_marker:
         solution_str = solution_str.rsplit(assistant_marker, 1)[1]
         solution_str = solution_str.split("<|im_end|>", 1)[0]
     solution_str = re.sub(
@@ -411,7 +442,7 @@ def extract_solution(solution_str):
     if not matches:
         return None
 
-    if content == solution_str and len(matches) <= 1:
+    if not has_assistant_marker and content == solution_str and len(matches) <= 1:
         return None
     
     # Use the final answer tag when a trajectory contains multiple turns.

@@ -31,12 +31,11 @@ def make_prefix(dp, template_type):
     if template_type == 'base':
         """This works for any base model"""
         prefix = f"""Answer the given question. \
-Before any search, you must first output a complete plan inside <plan> and </plan> that explains how many search steps you will take and what each step will search for. \
-The <plan> should be written once at the beginning and should cover the full search strategy before execution starts. \
-You must conduct reasoning inside <reasoning> and </reasoning> first every time you get new information. \
-After reasoning, if you find you lack some knowledge, you can call a search engine by <tool_call> query </tool_call> and it will return the top searched results between <tool_response> and </tool_response>. \
-You can search as many times as your want. \
-If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <plan>\nStep 1: Search the relevant entity.\nStep 2: Search the specific fact needed to answer the question.\n</plan>\n<reasoning>I need external evidence for the question.</reasoning>\n<tool_call>relevant entity specific fact</tool_call>\n<tool_response>Doc 1(Title: Example) The evidence needed to answer the question.</tool_response>\n<reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer> Beijing </answer>. Question: {question}\n"""
+Before any search, output exactly one complete plan block at the beginning. The plan must contain numbered lines in the form Step N: Search ... and should cover the full search strategy before execution starts. \
+After the plan, each action turn must contain one reasoning block followed immediately by either one tool_call block for search or one answer block for the final answer. \
+The text inside tool_call must be only a plain search query. It must not contain a query prefix, search(...), any tag, a tool name, JSON/function-call text, a URL, or tool_response text. \
+Never output <query>, </query>, <tool_query>, </tool_query>, <search>, <think>, <information>, /query, tool_call: search, tool_response:, or JSON/function-call style tool calls. These are invalid. \
+Use one clean Search-P1 format like this: <plan>\nStep 1: Search Albert Einstein birthplace.\nStep 2: Search Albert Einstein Nobel Prize year.\n</plan>\n<reasoning>I need evidence for the birthplace.</reasoning>\n<tool_call>Albert Einstein birthplace</tool_call>\n<tool_response>Doc 1(Title: Example) Albert Einstein was born in Ulm.</tool_response>\n<reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer>Ulm</answer>\nQuestion: {question}\n"""
     else:
         raise NotImplementedError
     return prefix
