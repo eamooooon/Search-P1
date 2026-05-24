@@ -35,21 +35,26 @@ def main():
             if group["correct"] >= args.min_successful and group["trajectories"]
         ]
         write_jsonl(args.vote_requests, requests)
+    else:
+        requests = []
 
     llm_votes = load_llm_votes(args.llm_votes)
-    rows = build_reference_rows(
+    rows, reference_stats = build_reference_rows(
         groups,
         llm_votes=llm_votes,
         min_successful=args.min_successful,
         min_vote_count=args.min_vote_count,
         min_vote_ratio=args.min_vote_ratio,
         max_reference_steps=args.max_reference_steps,
+        return_stats=True,
     )
     write_jsonl(args.output, rows)
 
     stats.update({
         "reference_rows": len(rows),
+        "vote_request_rows": len(requests),
         "llm_vote_rows": len(llm_votes),
+        **reference_stats,
     })
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 

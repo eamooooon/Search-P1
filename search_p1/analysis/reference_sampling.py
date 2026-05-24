@@ -77,7 +77,10 @@ def collect_successful_groups(path, max_successful_per_question=None):
     stats = {
         "total_rows": total_rows,
         "correct_rows": correct_rows,
+        "correct_rows_with_actions": correct_rows - skipped_no_actions,
         "groups": len(groups),
+        "groups_with_correct": sum(1 for group in groups.values() if group["correct"] > 0),
+        "groups_with_correct_actions": sum(1 for group in groups.values() if group["trajectories"]),
         "skipped_no_key": skipped_no_key,
         "skipped_correct_no_actions": skipped_no_actions,
     }

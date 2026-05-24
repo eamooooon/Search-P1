@@ -91,12 +91,20 @@ def build_reference_rows(groups,
                          min_successful=1,
                          min_vote_count=2,
                          min_vote_ratio=0.2,
-                         max_reference_steps=4):
+                         max_reference_steps=4,
+                         return_stats=False):
     rows = []
     llm_votes = llm_votes or {}
+    stats = {
+        "eligible_groups": 0,
+        "eligible_groups_without_reference": 0,
+        "consensus_reference_rows": 0,
+        "llm_reference_rows": 0,
+    }
     for key, group in groups.items():
         if group["correct"] < min_successful or not group["trajectories"]:
             continue
+        stats["eligible_groups"] += 1
         metadata = group["metadata"]
         voted_steps = llm_votes.get(key)
         if voted_steps:
@@ -111,7 +119,12 @@ def build_reference_rows(groups,
             )
             source = "consensus"
         if not reference_steps:
+            stats["eligible_groups_without_reference"] += 1
             continue
+        if source == "llm_vote":
+            stats["llm_reference_rows"] += 1
+        else:
+            stats["consensus_reference_rows"] += 1
 
         row = {
             "data_source": metadata.get("data_source"),
@@ -124,4 +137,6 @@ def build_reference_rows(groups,
             "accepted_trajectory_count": group["correct"],
         }
         rows.append({k: v for k, v in row.items() if v is not None})
+    if return_stats:
+        return rows, stats
     return rows
