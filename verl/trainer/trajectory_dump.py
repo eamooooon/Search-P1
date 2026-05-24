@@ -3,8 +3,15 @@ import os
 
 
 def _to_jsonable(value):
+    if hasattr(value, "detach"):
+        value = value.detach().cpu()
+    if hasattr(value, "tolist"):
+        return _to_jsonable(value.tolist())
     if hasattr(value, "item"):
-        return value.item()
+        try:
+            return value.item()
+        except ValueError:
+            pass
     if isinstance(value, dict):
         return {str(key): _to_jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

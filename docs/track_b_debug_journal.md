@@ -429,3 +429,23 @@ Track B 必看字段：
   - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
 - 后续观察：
   - 第一轮 dump 后先检查 `build_reference_steps.sh` 输出的 `total_rows`、`correct_rows`、`skipped_no_key` 和 `skipped_correct_no_actions`，再决定是否进入 LLM voting。
+
+## 2026-05-24 - 修复 trajectory dump 多答案数组序列化
+
+- 现象：
+  - 训练进入 reward dump 时抛出 `ValueError: can only convert an array of size 1 to a Python scalar`。
+  - 栈在 `trajectory_dump._to_jsonable()`，处理 `ground_truth.target` 时触发。
+- 根因：
+  - QA 数据的 `ground_truth.target` 可能是多答案数组。
+  - 原实现看到对象有 `.item()` 就直接转标量，只适用于单元素 array / tensor，不适用于多元素答案列表。
+- 调整：
+  - `_to_jsonable()` 优先处理 tensor 的 `detach().cpu()`。
+  - 对有 `tolist()` 的对象先转 list，再递归 JSON 化。
+  - `.item()` 只作为单标量 fallback，遇到 `ValueError` 不再中断。
+  - 新增测试覆盖多答案 array-like 对象落盘。
+- 验证：
+  - 通过 `python -m py_compile verl/trainer/trajectory_dump.py tests/test_reference_building.py`。
+  - 通过手动调用 `test_trajectory_dump_serializes_multi_answer_arrays`。
+  - 通过 `git diff --check`，仅有 Git 换行符提示，无 whitespace error。
+- 后续观察：
+  - 如果后续 dump 中出现不可 JSON 序列化的自定义对象，再统一在 `_to_jsonable()` 增加保守 fallback，而不是在 reward loop 里特殊处理。

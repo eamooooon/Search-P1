@@ -23,6 +23,10 @@ reference_llm = _load_module(
     "reference_llm",
     Path("search_p1") / "analysis" / "reference_llm.py",
 )
+trajectory_dump = _load_module(
+    "trajectory_dump",
+    Path("verl") / "trainer" / "trajectory_dump.py",
+)
 
 
 def _write_jsonl(path, rows):
@@ -146,3 +150,21 @@ def test_run_llm_voting_skip_completed_custom_ids():
     assert rows == []
     assert stats["skipped"] == 1
     assert stats["vote_requests"] == 0
+
+
+def test_trajectory_dump_serializes_multi_answer_arrays(tmp_path):
+    class ArrayLike:
+        def tolist(self):
+            return ["answer one", "answer two"]
+
+    path = tmp_path / "trajectories.jsonl"
+    trajectory_dump.append_trajectory_dump(
+        str(path),
+        solution_str="<answer>answer one</answer>",
+        ground_truth={"target": ArrayLike()},
+        data_source="nq",
+        extra_info={"split": "train", "index": 0},
+    )
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["ground_truth"]["target"] == ["answer one", "answer two"]
