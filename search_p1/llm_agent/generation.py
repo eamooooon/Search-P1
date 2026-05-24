@@ -31,6 +31,7 @@ class LLMGenerationManager:
         "action_before_plan",
         "missing_reasoning",
         "invalid_tool_call",
+        "answer_before_search",
         "missing_action_tag",
         "empty_prediction",
         "malformed_action_tag",
@@ -255,6 +256,7 @@ class LLMGenerationManager:
         valid_search_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         action_reason_stats: DefaultDict[str, int] = defaultdict(int)
         planner_seen = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.bool)
+        search_seen = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.bool)
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
         self._rollout_debug_samples_remaining = self._rollout_debug_sample_limit()
@@ -285,6 +287,7 @@ class LLMGenerationManager:
                 self.tokenizer.pad_token,
                 active_mask,
                 planner_seen=planner_seen,
+                search_seen=search_seen,
                 return_reason_stats=True,
                 return_reasons=True,
             )
@@ -304,7 +307,9 @@ class LLMGenerationManager:
             active_num_list.append(active_mask.sum().item())
             turns_stats[curr_active_mask] += 1
             valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
-            valid_search_stats += torch.tensor(is_search, dtype=torch.int)
+            is_search_tensor = torch.tensor(is_search, dtype=torch.bool)
+            valid_search_stats += is_search_tensor.to(dtype=torch.int)
+            search_seen = search_seen | is_search_tensor
 
             next_obs_ids = self._process_next_obs(next_obs)
             control_observation_mask = self._control_observation_mask_from_reasons(
@@ -352,6 +357,7 @@ class LLMGenerationManager:
                 active_mask,
                 do_search=False,
                 planner_seen=planner_seen,
+                search_seen=search_seen,
                 allow_plan_only=False,
                 return_reason_stats=True,
                 return_reasons=True,
@@ -371,7 +377,9 @@ class LLMGenerationManager:
             active_mask = active_mask * curr_active_mask
             active_num_list.append(active_mask.sum().item())
             valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
-            valid_search_stats += torch.tensor(is_search, dtype=torch.int)
+            is_search_tensor = torch.tensor(is_search, dtype=torch.bool)
+            valid_search_stats += is_search_tensor.to(dtype=torch.int)
+            search_seen = search_seen | is_search_tensor
             
 
             original_right_side = self._update_right_side(
@@ -745,6 +753,8 @@ class LLMGenerationManager:
                 " The search action content must be only the plain search query, with "
                 "no nested tags, tool names, search function syntax, JSON, or response text."
             )
+        elif reason == "answer_before_search":
+            extra = " A final answer is only valid after at least one valid search action."
         elif reason == "missing_action_tag":
             extra = (
                 " This turn must end with a legal action tag: "
@@ -767,6 +777,7 @@ class LLMGenerationManager:
         active_mask=None,
         do_search=True,
         planner_seen=None,
+        search_seen=None,
         return_reason_stats=False,
         allow_plan_only=True,
         return_reasons=False,
@@ -790,6 +801,7 @@ class LLMGenerationManager:
         cur_actions, contents, reasons = self.postprocess_predictions(
             predictions,
             planner_seen=planner_seen,
+            search_seen=search_seen,
             active_mask=active_mask,
             allow_plan_only=allow_plan_only,
             return_reasons=True,
@@ -809,6 +821,8 @@ class LLMGenerationManager:
 
         if planner_seen is None:
             planner_seen = [False] * len(predictions)
+        if search_seen is None:
+            search_seen = [False] * len(predictions)
 
         for i, (action, active) in enumerate(zip(cur_actions, active_mask)):
             active = self._mask_value_to_bool(active)
@@ -869,6 +883,7 @@ class LLMGenerationManager:
         self,
         predictions: List[Any],
         planner_seen=None,
+        search_seen=None,
         active_mask=None,
         allow_plan_only=True,
         return_reasons=False,
@@ -889,11 +904,14 @@ class LLMGenerationManager:
                 
         if planner_seen is None:
             planner_seen = [False] * len(predictions)
+        if search_seen is None:
+            search_seen = [False] * len(predictions)
         if active_mask is None:
             active_mask = [True] * len(predictions)
 
-        for prediction, has_planned, active in zip(predictions, planner_seen, active_mask):
+        for prediction, has_planned, has_searched, active in zip(predictions, planner_seen, search_seen, active_mask):
             has_planned = self._mask_value_to_bool(has_planned)
+            has_searched = self._mask_value_to_bool(has_searched)
             active = self._mask_value_to_bool(active)
             if isinstance(prediction, str): # for llm output
                 reason = "inactive"
@@ -925,6 +943,10 @@ class LLMGenerationManager:
                             reason = invalid_tool_call_reason
                             content = ''
                             action = None
+                    elif action == 'answer' and not has_searched:
+                        reason = "answer_before_search"
+                        content = ''
+                        action = None
                     elif active:
                         reason = f"valid_{action}"
                 else:

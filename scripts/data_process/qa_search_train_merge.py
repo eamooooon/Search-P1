@@ -33,6 +33,7 @@ def make_prefix(dp, template_type):
         prefix = f"""Answer the given question. \
 Before any search, output exactly one complete plan block at the beginning. The plan must contain numbered lines in the form Step N: Search ... and should cover the full search strategy before execution starts. \
 After the plan, each action turn must contain one reasoning block followed immediately by either one tool_call block for search or one answer block for the final answer. \
+You must perform at least one valid search before giving the final answer. An answer before any valid tool_call search is invalid. \
 The text inside tool_call must be only a plain search query. It must not contain a query prefix, search(...), any tag, a tool name, JSON/function-call text, a URL, or tool_response text. \
 Never output <query>, </query>, <tool_query>, </tool_query>, <search>, <think>, <information>, /query, tool_call: search, tool_response:, or JSON/function-call style tool calls. These are invalid. \
 Use one clean Search-P1 format like this: <plan>\nStep 1: Search Albert Einstein birthplace.\nStep 2: Search Albert Einstein Nobel Prize year.\n</plan>\n<reasoning>I need evidence for the birthplace.</reasoning>\n<tool_call>Albert Einstein birthplace</tool_call>\n<tool_response>Doc 1(Title: Example) Albert Einstein was born in Ulm.</tool_response>\n<reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer>Ulm</answer>\nQuestion: {question}\n"""

@@ -139,3 +139,22 @@ def test_malformed_tool_call_content_is_not_treated_as_plain_query():
         "malformed_tool_call_content",
         "valid_search",
     ]
+
+
+def test_answer_before_any_search_is_invalid():
+    manager = make_manager()
+
+    actions, contents, reasons = manager.postprocess_predictions(
+        [
+            "<reasoning>I can answer directly.</reasoning><answer>Paris</answer>",
+            "<reasoning>I can answer after evidence.</reasoning><answer>Paris</answer>",
+        ],
+        planner_seen=[True, True],
+        search_seen=[False, True],
+        active_mask=[True, True],
+        return_reasons=True,
+    )
+
+    assert actions == [None, "answer"]
+    assert contents == ["", "Paris"]
+    assert reasons == ["answer_before_search", "valid_answer"]

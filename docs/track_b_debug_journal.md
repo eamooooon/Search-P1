@@ -589,3 +589,21 @@ Track B 必看字段：
 - 后续观察：
   - 下一次 10-step smoke run 重点看 `invalid_action/ratio` 是否下降，以及 `action_reason/malformed_query_tag`、`malformed_legacy_tag`、`malformed_tool_call_content` 的分布。
   - 如果 invalid action 下降但 `correct_rows` 仍很低，再扩大 `trajectory_dump_limit` 或增加 rollout 样本；不要先改 Track B matcher。
+## 2026-05-24 - 强制最终答案前至少一次合法 Search
+
+- 现象：
+  - 新一轮 reference build 中 `correct_rows=303`，但 `correct_rows_with_actions=114`，`skipped_correct_no_actions=189`。
+  - 说明大量正确轨迹是直接回答，或者没有留下合法 `<tool_call>`，对 Track B reference 构建没有价值。
+- 根因：
+  - 当前环境允许 `<plan> -> <reasoning> -> <answer>` 直接结束。
+  - 这对普通 QA reward 可能合理，但和 Search-P1 的 Planner/Search/Think/Answer 轨迹目标冲突，也会让拒绝采样产出大量不能构建 reference 的正确样本。
+- 调整：
+  - 数据 prompt 明确要求最终答案前必须至少执行一次合法 search。
+  - `generation.py` 新增 `search_seen` 状态；如果在没有合法 search 前输出 `<answer>`，动作标记为 invalid。
+  - 新增 action reason：`answer_before_search`，训练日志可直接观察该问题是否被压下去。
+  - control observation mask 覆盖 `answer_before_search`，避免这类反馈污染最终 trajectory。
+- 验证：
+  - 新增测试覆盖 answer-before-search 被拒绝、search 后 answer 合法。
+- 后续观察：
+  - 下一轮重点看 `action_reason/answer_before_search/ratio` 和 `skipped_correct_no_actions`。
+  - 预期短期 `correct_rows` 可能下降，但 `correct_rows_with_actions / correct_rows` 应该上升；如果不上升，再看模型是否卡在 invalid feedback 循环。
