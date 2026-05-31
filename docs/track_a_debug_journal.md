@@ -459,3 +459,35 @@
 - 后续观察：
   - v16 优先看 `bare_search`、`search_prefix`、`low_info_search_prefix`、`function_search` 是否下降。
   - 如果 action quality 改善但 `unmatched_actions` 仍高，再考虑 matcher 或 plan/action intent 表达问题。
+
+## 2026-05-31 - SFT 冷启动数据与 verl SFT 训练入口
+
+- 现象：
+  - Search-P1 直接做 RL 时，Track A 后期能推动格式和路径一致性，但 `base_score` 长期偏低，answer correctness 没有同步改善。
+  - v16 100-step 训练还出现中后期格式崩塌，说明仅靠在线 RL 从零学习 Planner -> Search -> Think -> Answer 轨迹成本高、稳定性差。
+  - 用户希望先做 SFT 冷启动，但当前仓库的 `fsdp_sft_trainer.py` 已经引用 `verl.utils.dataset.SFTDataset`，而本地 `verl/utils/dataset` 没有导出该 Dataset，直接跑 verl SFT 会报错。
+
+- 根因：
+  - 当前 Search-P1 数据是 RL parquet，字段核心是 `prompt` 和 `reward_model.ground_truth`，不是 verl SFT trainer 期望的 `prompt / response` 监督学习格式。
+  - SFT trainer 的训练逻辑需要 `input_ids`、`attention_mask`、`position_ids`、`loss_mask`，其中 loss 只能打在 assistant response 上；缺少 Dataset 时无法建立这个边界。
+  - 之前只讨论了 A 类模板数据，没有把它转换成 verl 可直接消费的 parquet，也没有提供启动 SFT 的脚本和 swanlab 监控入口。
+
+- 调整：
+  - 新增/整理 `scripts/sft/build_sft.py`，从现有 `data/nq_hotpotqa_p1/*.parquet` 抽取 `prompt[0].content` 和 `reward_model.ground_truth.target`，构造 Search-P1 冷启动 response。
+  - `build_sft.py` 支持两类输出：
+    - `jsonl`：保留 `messages + metadata`，方便人工检查。
+    - `verl_parquet`：输出 `prompt / response / metadata`，用于 verl FSDP SFT。
+  - 补齐 `verl/utils/dataset/sft_dataset.py` 并在 `verl/utils/dataset/__init__.py` 导出 `SFTDataset`；实现口径对齐上游 verl：prompt 套 chat template，拼接 `response + eos`，padding/truncation 后只对 response 区间计算 `loss_mask`。
+  - 新增 `scripts/sft/build_sft.sh`，默认生成 `data/nq_hotpotqa_p1/search_p1_sft_format_10k.parquet`。
+  - 新增 `scripts/sft/train_sft.sh`，默认先 build train/val SFT parquet，再通过 `torchrun -m verl.trainer.fsdp_sft_trainer` 启动训练，并设置 `trainer.logger=['swanlab']`。
+  - 用户将脚本名从 `build_search_p1_sft.py / train_search_p1_sft.sh` 收敛为 `build_sft.py / build_sft.sh / train_sft.sh` 后，同步修正 `train_sft.sh` 和测试里的旧路径引用，避免运行时找不到旧文件。
+
+- 验证：
+  - 本地执行 `bash -n scripts/sft/train_sft.sh scripts/sft/build_sft.sh` 检查 shell 语法。
+  - 本地执行 `python -m py_compile scripts/sft/build_sft.py verl/utils/dataset/sft_dataset.py` 检查 Python 语法。
+  - 本地执行 `python -m pytest tests/test_build_search_p1_sft.py`，结果为 `3 passed, 1 skipped`；skip 原因是当前 Windows Python 没安装 `torch`，服务器 search 环境有 torch 时应执行 Dataset loss_mask 测试。
+
+- 后续观察：
+  - 第一阶段先用模板 A 数据做冷启动，建议训练后用小规模 rollout 评估：planner_valid_rate、plain_query 占比、no_actions、unmatched_actions、base_score。
+  - 如果 SFT 后格式稳定但答案仍弱，再补 B 类 clean rollout 轨迹；C 类 LLM synthetic 多跳数据暂时作为第三步，不应先引入过多噪声。
+  - SFT 达到可进入 RL 的最低标准建议是：合法 planner 稳定高于 90%，plain query 占比明显高于 RL 冷启动初期，no_actions 显著下降，并且短 rollout 中不再大面积复制 `<tool_response>` 或伪造工具结果。
