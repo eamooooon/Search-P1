@@ -12,11 +12,14 @@ N_GPUS=${N_GPUS:-4}
 
 TRAIN_SOURCE=${TRAIN_SOURCE:-${DATA_DIR}/train.parquet}
 VAL_SOURCE=${VAL_SOURCE:-${DATA_DIR}/test.parquet}
+FULL_FILE=${FULL_FILE:-${DATA_DIR}/search_p1_sft_full.parquet}
 TRAIN_FILE=${TRAIN_FILE:-${DATA_DIR}/search_p1_sft_train.parquet}
 VAL_FILE=${VAL_FILE:-${DATA_DIR}/search_p1_sft_val.parquet}
 BUILD_DATA=${BUILD_DATA:-1}
+SPLIT_FROM_FULL=${SPLIT_FROM_FULL:-0}
 TRAIN_LIMIT=${TRAIN_LIMIT:-10000}
 VAL_LIMIT=${VAL_LIMIT:-1000}
+VAL_RATIO=${VAL_RATIO:-0.1}
 MAX_QUERY_WORDS=${MAX_QUERY_WORDS:-18}
 SEED=${SEED:-7}
 
@@ -33,25 +36,44 @@ CHECKPOINT_DIR=${CHECKPOINT_DIR:-checkpoints/${EXPERIMENT_NAME}}
 mkdir -p "${LOG_DIR}" "${DATA_DIR}"
 
 if [[ "${BUILD_DATA}" == "1" ]]; then
-  python scripts/sft/build_sft.py \
-    --input "${TRAIN_SOURCE}" \
-    --output "${TRAIN_FILE}" \
-    --output-format verl_parquet \
-    --limit "${TRAIN_LIMIT}" \
-    --max-query-words "${MAX_QUERY_WORDS}" \
-    --seed "${SEED}" \
-    --conversation-format single_assistant \
-    --shuffle
+  if [[ "${SPLIT_FROM_FULL}" == "1" ]]; then
+    python scripts/sft/build_sft.py \
+      --input "${TRAIN_SOURCE}" \
+      --output "${FULL_FILE}" \
+      --output-format verl_parquet \
+      --limit "${TRAIN_LIMIT}" \
+      --max-query-words "${MAX_QUERY_WORDS}" \
+      --seed "${SEED}" \
+      --conversation-format single_assistant \
+      --shuffle
 
-  python scripts/sft/build_sft.py \
-    --input "${VAL_SOURCE}" \
-    --output "${VAL_FILE}" \
-    --output-format verl_parquet \
-    --limit "${VAL_LIMIT}" \
-    --max-query-words "${MAX_QUERY_WORDS}" \
-    --seed "${SEED}" \
-    --conversation-format single_assistant \
-    --shuffle
+    python scripts/sft/split_sft.py \
+      --input "${FULL_FILE}" \
+      --train-output "${TRAIN_FILE}" \
+      --val-output "${VAL_FILE}" \
+      --val-ratio "${VAL_RATIO}" \
+      --seed "${SEED}"
+  else
+    python scripts/sft/build_sft.py \
+      --input "${TRAIN_SOURCE}" \
+      --output "${TRAIN_FILE}" \
+      --output-format verl_parquet \
+      --limit "${TRAIN_LIMIT}" \
+      --max-query-words "${MAX_QUERY_WORDS}" \
+      --seed "${SEED}" \
+      --conversation-format single_assistant \
+      --shuffle
+
+    python scripts/sft/build_sft.py \
+      --input "${VAL_SOURCE}" \
+      --output "${VAL_FILE}" \
+      --output-format verl_parquet \
+      --limit "${VAL_LIMIT}" \
+      --max-query-words "${MAX_QUERY_WORDS}" \
+      --seed "${SEED}" \
+      --conversation-format single_assistant \
+      --shuffle
+  fi
 fi
 
 PYTHONUNBUFFERED=1 torchrun \

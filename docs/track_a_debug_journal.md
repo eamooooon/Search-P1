@@ -491,3 +491,27 @@
   - 第一阶段先用模板 A 数据做冷启动，建议训练后用小规模 rollout 评估：planner_valid_rate、plain_query 占比、no_actions、unmatched_actions、base_score。
   - 如果 SFT 后格式稳定但答案仍弱，再补 B 类 clean rollout 轨迹；C 类 LLM synthetic 多跳数据暂时作为第三步，不应先引入过多噪声。
   - SFT 达到可进入 RL 的最低标准建议是：合法 planner 稳定高于 90%，plain query 占比明显高于 RL 冷启动初期，no_actions 显著下降，并且短 rollout 中不再大面积复制 `<tool_response>` 或伪造工具结果。
+
+## 2026-05-31 - SFT 数据 train/test 切分工具补齐
+
+- 现象：
+  - 已经有 `build_sft.py` 能从现有 RL parquet 构造 Search-P1 SFT 数据，也有 `train_sft.sh` 能启动 verl SFT。
+  - 但缺少一个独立的 SFT 数据切分工具；如果后续把 A 类模板数据、B 类 clean rollout、C 类 synthetic 数据先合并成一个大文件，就没有稳定方式切出 train/val。
+
+- 根因：
+  - 之前默认沿用原始 `data/nq_hotpotqa_p1/train.parquet` 和 `test.parquet` 分别生成 SFT train/val。
+  - 这个方式适合第一版模板 A 数据，但不适合后续混合多来源数据，因为混合后需要在同一分布上重新切分，避免 train/val 来源不一致。
+
+- 调整：
+  - 新增 `scripts/sft/split_sft.py`，支持 `jsonl` 和 `parquet` 两种 SFT 数据格式。
+  - 支持 `--val-size` 固定验证集大小，也支持 `--val-ratio` 按比例切分；默认 shuffle，并可用 `--no-shuffle` 保留原顺序。
+  - 新增 `scripts/sft/split_sft.sh`，提供 shell 入口，默认把 `search_p1_sft_format_10k.parquet` 切成 `search_p1_sft_train.parquet` 和 `search_p1_sft_val.parquet`。
+  - `train_sft.sh` 新增 `SPLIT_FROM_FULL=1` 路径：先 build 一个 full SFT parquet，再调用 `split_sft.py` 生成 train/val，然后启动 SFT。
+
+- 验证：
+  - 新增 `tests/test_split_sft.py`，覆盖 parquet 固定 `val_size` 切分和 jsonl 按 `val_ratio` + `--no-shuffle` 切分。
+  - 保留 `tests/test_build_search_p1_sft.py`，确认 build 输出与 SFTDataset 兼容逻辑不受影响。
+
+- 后续观察：
+  - 后续引入 B/C 数据时，推荐先合并成一个 full SFT 文件，再用该工具切分，保证验证集能反映混合数据整体分布。
+  - 如果需要严格按数据来源分层切分，可以在 `metadata.sft_type` 或 `metadata.data_source` 上再扩展 stratified split；当前第一版只做随机切分。
