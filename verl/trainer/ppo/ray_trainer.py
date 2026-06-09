@@ -189,6 +189,11 @@ REWARD_COMPONENT_KEYS = (
     "self_n_plan",
     "self_n_actions",
     "self_n_exec",
+    "reference_alignment",
+    "ref_available",
+    "ref_n_steps",
+    "ref_n_actions",
+    "ref_n_covered",
     "final_score",
 )
 VALID_ACTION_REASON_KEYS = {"valid_search", "valid_answer", "valid_plan", "inactive"}
@@ -197,14 +202,14 @@ INVALID_ACTION_REASON_KEYS = {
     "duplicate_plan",
     "missing_or_invalid_plan_steps",
     "action_before_plan",
-    "missing_reasoning",
-    "invalid_tool_call",
+    "missing_think",
+    "invalid_search",
     "missing_action_tag",
     "empty_prediction",
     "malformed_action_tag",
     "malformed_query_tag",
-    "malformed_legacy_tag",
-    "malformed_tool_call_content",
+    "malformed_tool_tag",
+    "malformed_search_content",
     "unknown_invalid",
 }
 ACTION_REASON_KEYS = VALID_ACTION_REASON_KEYS | INVALID_ACTION_REASON_KEYS

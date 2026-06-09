@@ -11,10 +11,10 @@ TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I need the birthplace.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the birthplace.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 says Ulm.</information>
+<think>Now answer.</think>
 <answer>Ulm</answer>"""
 
 

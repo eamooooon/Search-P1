@@ -52,10 +52,10 @@ def test_build_search_p1_sft_from_parquet(tmp_path):
     ]
     assert "<plan>" in messages[1]["content"]
     assert "Step 1: Search who conducts a title search and issues a report" in messages[1]["content"]
-    assert "<tool_call>who conducts a title search and issues a report</tool_call>" in messages[1]["content"]
-    assert messages[2]["content"] == "<tool_response>Doc 1(Title: Answer evidence) The answer is Anyone.</tool_response>"
+    assert "<search>who conducts a title search and issues a report</search>" in messages[1]["content"]
+    assert messages[2]["content"] == "<information>Doc 1(Title: Answer evidence) The answer is Anyone.</information>"
     assert messages[3]["content"] == (
-        "<reasoning>The evidence is sufficient to answer the question.</reasoning>\n"
+        "<think>The evidence is sufficient to answer the question.</think>\n"
         "<answer>Anyone</answer>"
     )
     assert row["metadata"]["sft_type"] == "template_answer_stub"
@@ -93,7 +93,7 @@ def test_build_search_p1_sft_single_assistant_format(tmp_path):
 
     row = json.loads(output_path.read_text(encoding="utf-8").strip())
     assert [message["role"] for message in row["messages"]] == ["user", "assistant"]
-    assert "<tool_response>" in row["messages"][1]["content"]
+    assert "<information>" in row["messages"][1]["content"]
 
 
 def test_build_search_p1_sft_verl_parquet_format(tmp_path):
@@ -130,7 +130,7 @@ def test_build_search_p1_sft_verl_parquet_format(tmp_path):
     assert list(frame.columns) == ["prompt", "response", "metadata"]
     assert frame.iloc[0]["prompt"].endswith("Question: who founded Example Co?")
     assert "<plan>" in frame.iloc[0]["response"]
-    assert "<tool_call>who founded Example Co</tool_call>" in frame.iloc[0]["response"]
+    assert "<search>who founded Example Co</search>" in frame.iloc[0]["response"]
     assert "<answer>Alice</answer>" in frame.iloc[0]["response"]
 
 
@@ -162,6 +162,7 @@ def test_sft_dataset_masks_prompt_and_padding(tmp_path):
     import pytest
 
     torch = pytest.importorskip("torch")
+    pytest.importorskip("tensordict")
     from verl.utils.dataset import SFTDataset
 
     parquet_path = tmp_path / "sft.parquet"

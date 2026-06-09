@@ -21,6 +21,7 @@ import datasets
 
 from verl.utils.hdfs_io import copy, makedirs
 import argparse
+from reference_steps import load_reference_steps, lookup_reference_steps
 
 
 def make_prefix(dp, template_type):
@@ -29,16 +30,100 @@ def make_prefix(dp, template_type):
     # NOTE: also need to change reward_score/countdown.py
     if template_type == 'base':
         """This works for any base model"""
-        prefix = f"""Answer the given question. \
-Before any search, output exactly one complete plan block at the beginning. The planner contains numbered Step N: Search ... search-intent steps. Each step is one executable search goal, not necessarily the exact final query. If a later search depends on an unknown intermediate result, use placeholders like [identified actor], [identified film], or [target entity]. Do not list fallback branches, year-by-year searches, episode-by-episode searches, or long exhaustive lists. Keep the plan short and executable. \
-After the plan, each action turn must contain one reasoning block followed immediately by either one tool_call block for search or one answer block for the final answer. \
-The text inside tool_call must be only a plain search query. It must not contain a query prefix, search(...), search-xxx/query-xxx pseudo prefixes, any tag, a tool name, JSON/function-call text, a URL, or tool_response text. \
-The assistant must never output <tool_response>. <tool_response> is returned only by the environment after a valid <tool_call>. When searching, assistant output must stop immediately after </tool_call> and wait for the environment. Do not invent observations or documents. \
-Never output <query>, </query>, <tool_query>, </tool_query>, <search>, <think>, <information>, /query, tool_call: search, tool_response:, short search-xxx/query-xxx pseudo queries, or JSON/function-call style tool calls. These are invalid. \
-Use role-separated Search-P1 turns like this. Assistant output: <plan>\nStep 1: Search That Touch of Mink cast to identify the relevant actress.\nStep 2: Search [identified actress] role in The Honeymooners.\n</plan>\n<reasoning>I need to identify the actress from the film cast.</reasoning>\n<tool_call>That Touch of Mink cast</tool_call>\nEnvironment returns: <tool_response>Doc 1(Title: That Touch of Mink) The cast includes Joyce Randolph.</tool_response>\nAssistant output: <reasoning>Now I need her role in The Honeymooners.</reasoning>\n<tool_call>Joyce Randolph The Honeymooners role</tool_call>\nEnvironment returns: <tool_response>Doc 2(Title: Joyce Randolph) Joyce Randolph played Trixie Norton.</tool_response>\nAssistant output: <reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer>Trixie Norton</answer>\nQuestion: {question}\n"""
+        prefix = f"""You are a meticulous Deep Research Agent. Answer the question by planning, searching, reading evidence, and giving a concise final answer.
+## CRITICAL INSTRUCTIONS
+1. Detailed Planning (<plan>):
+- In the first turn, output exactly one complete plan block.
+- Break the question into executable search-intent steps.
+- Use numbered lines in the form: Step N: Search ...
+- Focus on one sub-question at a time.
+2. Step-by-Step Execution (<search>):
+- After the plan, each assistant turn must contain one <think> block followed by either one <search> block or one <answer> block.
+- Execute only one plain natural language search query per turn.
+- After receiving <information>, use <think> to decide whether the evidence is sufficient or another search is needed.
+3. Evidence Boundary:
+- <information> is returned only by the environment after a valid <search>.
+- When you finish </search>, stop and wait for the environment.
+- Do not invent observations or documents.
+4. Final Answer (<answer>):
+- Output <answer> only when the necessary information is gathered.
+- Keep the final answer concrete and short.
+## CURRENT TASK
+Question: {question}
+"""
+    elif template_type == 'medium':
+        prefix = f"""You are a meticulous Deep Research Agent. Answer the question using the Search-R1 format.
+
+Turn 1 must contain exactly one plan block followed by exactly one search action:
+<plan>
+Step 1: Search ...
+Step 2: Search ...
+</plan>
+<think>Briefly explain the next action.</think>
+<search>plain natural language search query</search>
+
+After an information block, never write another <plan>. Each later turn must be exactly one think block followed by one action block:
+<think>Briefly explain what to do next.</think>
+<search>plain natural language search query</search>
+
+or:
+<think>The evidence is sufficient.</think>
+<answer>short final answer</answer>
+
+Hard rules:
+- You must perform at least one <search> before any <answer>.
+- Always close the final action with </search> or </answer>.
+- A <think>...</think> block must immediately precede every <search> or <answer>.
+- Use exactly one <plan> block total; repeating <plan> is invalid.
+- In <plan>, placeholders like [identified actress] are allowed when a later search depends on an earlier result.
+- Inside <search>, write only a concrete plain query, such as Arthur's Magazine founding date.
+- Inside <search>, replace any plan placeholder with the concrete entity learned from <information>.
+- Do not use unresolved placeholders in <search> or <answer>; the final <answer> must be concrete and short.
+- When you finish </search>, stop. The environment will return <information>.
+
+Example first turn:
+<plan>
+Step 1: Search That Touch of Mink cast to identify the relevant actress.
+Step 2: Search [identified actress] The Honeymooners role.
+</plan>
+<think>I need to identify the actress from the film.</think>
+<search>That Touch of Mink cast</search>
+
+Example later turn after information:
+<think>The result identifies Joyce Randolph, so I need her Honeymooners role.</think>
+<search>Joyce Randolph The Honeymooners role</search>
+
+Example final turn:
+<think>The evidence is sufficient.</think>
+<answer>Trixie Norton</answer>
+
+Question: {question}
+"""
     else:
         raise NotImplementedError
     return prefix
+
+
+def output_features():
+    return datasets.Features({
+        "data_source": datasets.Value("string"),
+        "prompt": [{
+            "role": datasets.Value("string"),
+            "content": datasets.Value("string"),
+        }],
+        "ability": datasets.Value("string"),
+        "reward_model": {
+            "style": datasets.Value("string"),
+            "ground_truth": {
+                "target": datasets.Sequence(datasets.Value("string")),
+                "reference_steps": datasets.Sequence(datasets.Value("string")),
+            },
+        },
+        "extra_info": {
+            "split": datasets.Value("string"),
+            "index": datasets.Value("int64"),
+        },
+    })
 
 
 if __name__ == '__main__':
@@ -47,8 +132,15 @@ if __name__ == '__main__':
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--template_type', type=str, default='base')
     parser.add_argument('--data_sources', default='nq')
+    parser.add_argument('--reference_steps_file', default=None)
+    parser.add_argument('--max_reference_steps', type=int, default=None)
 
     args = parser.parse_args()
+    references = load_reference_steps(
+        args.reference_steps_file,
+        max_reference_steps=args.max_reference_steps,
+    )
+    use_explicit_features = bool(args.reference_steps_file)
 
     data_sources = args.data_sources.split(',')
     all_dataset = []
@@ -78,9 +170,18 @@ if __name__ == '__main__':
                 if example['question'][-1] != '?':
                     example['question'] += '?'
                 question = make_prefix(example, template_type=args.template_type)
+                reference_steps = lookup_reference_steps(
+                    references,
+                    data_source=data_source,
+                    split=split,
+                    index=idx,
+                    question=example['question'],
+                )
                 solution = {
                     "target": example['golden_answers'],
                 }
+                if use_explicit_features:
+                    solution["reference_steps"] = reference_steps
 
                 data = {
                     "data_source": data_source,
@@ -102,7 +203,13 @@ if __name__ == '__main__':
 
             return process_fn
 
-        test_dataset = test_dataset.map(function=make_map_fn('test'), with_indices=True)
+        map_kwargs = {"function": make_map_fn('test'), "with_indices": True}
+        if use_explicit_features:
+            map_kwargs.update({
+                "remove_columns": test_dataset.column_names,
+                "features": output_features(),
+            })
+        test_dataset = test_dataset.map(**map_kwargs)
         all_dataset.append(test_dataset)
 
     local_dir = args.local_dir

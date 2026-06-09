@@ -20,13 +20,13 @@ PERFECT_TRAJECTORY = """<|im_start|>assistant
 Step 1: Search Albert Einstein birthplace.
 Step 2: Search Albert Einstein Nobel Prize year.
 </plan>
-<reasoning>I need the birthplace.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>I need the Nobel year.</reasoning>
-<tool_call>Albert Einstein Nobel Prize year</tool_call>
-<tool_response>Doc 2 says 1921.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the birthplace.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 says Ulm.</information>
+<think>I need the Nobel year.</think>
+<search>Albert Einstein Nobel Prize year</search>
+<information>Doc 2 says 1921.</information>
+<think>Now answer.</think>
 <answer>Ulm and 1921</answer>"""
 
 
@@ -34,10 +34,10 @@ INTENT_INSTANTIATED_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search [identified actress] character in The Honeymooners.
 </plan>
-<reasoning>I need the character for the identified actress.</reasoning>
-<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
-<tool_response>Doc 1 says Joyce Randolph played Trixie Norton.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the character for the identified actress.</think>
+<search>Joyce Randolph Trixie Norton The Honeymooners</search>
+<information>Doc 1 says Joyce Randolph played Trixie Norton.</information>
+<think>Now answer.</think>
 <answer>Trixie Norton</answer>"""
 
 
@@ -45,10 +45,10 @@ INTENT_TOO_GENERIC_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search [identified winner] nationality.
 </plan>
-<reasoning>I need the winner nationality.</reasoning>
-<tool_call>Jonas Vingegaard nationality</tool_call>
-<tool_response>Doc 1 says Jonas Vingegaard is Danish.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the winner nationality.</think>
+<search>Jonas Vingegaard nationality</search>
+<information>Doc 1 says Jonas Vingegaard is Danish.</information>
+<think>Now answer.</think>
 <answer>Danish</answer>"""
 
 
@@ -56,7 +56,7 @@ NO_SEARCH_WRONG_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I will answer without search.</reasoning>
+<think>I will answer without search.</think>
 <answer>wrong</answer>"""
 
 
@@ -64,9 +64,9 @@ FAKED_TOOL_RESPONSE_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I will fake evidence without search.</reasoning>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I will fake evidence without search.</think>
+<information>Doc 1 says Ulm.</information>
+<think>Now answer.</think>
 <answer>wrong</answer>"""
 
 
@@ -74,15 +74,15 @@ NO_ANSWER_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I never provide a final answer.</reasoning>"""
+<think>I never provide a final answer.</think>"""
 
 
 MALFORMED_TOOL_CALL_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I will emit an invalid search action.</reasoning>
-<tool_call>https://example.com/einstein</tool_call>
+<think>I will emit an invalid search action.</think>
+<search>https://example.com/einstein</search>
 <answer>wrong</answer>"""
 
 
@@ -93,10 +93,10 @@ Step 1: Search Albert Einstein birthplace.
 <plan>
 Step 2: Search duplicate planner.
 </plan>
-<reasoning>I still issue a legal search.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>Now answer incorrectly.</reasoning>
+<think>I still issue a legal search.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 says Ulm.</information>
+<think>Now answer incorrectly.</think>
 <answer>wrong</answer>"""
 
 
@@ -105,10 +105,10 @@ INVALID_PLANNER_PARTIAL_STEP_TRAJECTORY = """<|im_start|>assistant
 Step 1: Search first children's day celebration India.
 Step 2: If no direct information found, search history of children's day India.
 </plan>
-<reasoning>I need evidence.</reasoning>
-<tool_call>first children's day celebration India</tool_call>
-<tool_response>Doc 1 mentions a celebration date.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need evidence.</think>
+<search>first children's day celebration India</search>
+<information>Doc 1 mentions a celebration date.</information>
+<think>Now answer.</think>
 <answer>wrong</answer>"""
 
 
@@ -120,10 +120,10 @@ Step 3: Search topic three.
 Step 4: Search topic four.
 Step 5: Search topic five.
 </plan>
-<reasoning>I will execute the first search.</reasoning>
-<tool_call>topic one</tool_call>
-<tool_response>Doc 1 has evidence.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I will execute the first search.</think>
+<search>topic one</search>
+<information>Doc 1 has evidence.</information>
+<think>Now answer.</think>
 <answer>wrong</answer>"""
 
 
@@ -203,13 +203,13 @@ def test_self_consistency_weight_adds_partial_track_a_bonus():
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I need the birthplace.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>I also search something unrelated.</reasoning>
-<tool_call>unrelated query</tool_call>
-<tool_response>Noise.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the birthplace.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 says Ulm.</information>
+<think>I also search something unrelated.</think>
+<search>unrelated query</search>
+<information>Noise.</information>
+<think>Now answer.</think>
 <answer>wrong</answer>"""
 
     components = qa_em_format.compute_score_components(
@@ -245,11 +245,11 @@ def test_self_consistency_weight_no_action_adds_zero_bonus():
 
 def test_redundant_action_lowers_self_consistency():
     redundant = PERFECT_TRAJECTORY.replace(
-        "<reasoning>Now answer.</reasoning>",
-        "<reasoning>Extra check.</reasoning>\n"
-        "<tool_call>unrelated query</tool_call>\n"
-        "<tool_response>Noise.</tool_response>\n"
-        "<reasoning>Now answer.</reasoning>",
+        "<think>Now answer.</think>",
+        "<think>Extra check.</think>\n"
+        "<search>unrelated query</search>\n"
+        "<information>Noise.</information>\n"
+        "<think>Now answer.</think>",
     )
 
     perfect_score = qa_em_format.compute_self_consistency_score(PERFECT_TRAJECTORY)
@@ -264,13 +264,13 @@ def test_duplicate_actions_do_not_inflate_covered_steps():
 Step 1: Search Albert Einstein birthplace.
 Step 2: Search Albert Einstein Nobel Prize year.
 </plan>
-<reasoning>I need the birthplace.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>I repeat the same query.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 again says Ulm.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the birthplace.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 says Ulm.</information>
+<think>I repeat the same query.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 again says Ulm.</information>
+<think>Now answer.</think>
 <answer>Ulm</answer>"""
 
     components = qa_em_format.compute_self_consistency_components(duplicate_action)
@@ -318,13 +318,13 @@ def test_intent_lexical_duplicate_actions_do_not_cover_multiple_steps():
 Step 1: Search [identified actress] character in The Honeymooners.
 Step 2: Search [identified actress] role in The Honeymooners.
 </plan>
-<reasoning>I need the character.</reasoning>
-<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
-<tool_response>Doc 1 says Joyce Randolph played Trixie Norton.</tool_response>
-<reasoning>I repeat the same query.</reasoning>
-<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
-<tool_response>Doc 1 again says Joyce Randolph played Trixie Norton.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the character.</think>
+<search>Joyce Randolph Trixie Norton The Honeymooners</search>
+<information>Doc 1 says Joyce Randolph played Trixie Norton.</information>
+<think>I repeat the same query.</think>
+<search>Joyce Randolph Trixie Norton The Honeymooners</search>
+<information>Doc 1 again says Joyce Randolph played Trixie Norton.</information>
+<think>Now answer.</think>
 <answer>Trixie Norton</answer>"""
 
     components = qa_em_format.compute_self_consistency_components(
@@ -338,13 +338,13 @@ Step 2: Search [identified actress] role in The Honeymooners.
     assert components["self_consistency"] == 0.25
 
 
-def test_tool_response_content_is_not_counted_as_action():
+def test_information_content_is_not_counted_as_action():
     response_with_fake_action = PERFECT_TRAJECTORY.replace(
         "Doc 2 says 1921.",
-        "<tool_call>fake response query</tool_call>",
+        "<search>fake response query</search>",
     )
 
-    assert qa_em_format.extract_tool_calls(response_with_fake_action) == [
+    assert qa_em_format.extract_search_calls(response_with_fake_action) == [
         "Albert Einstein birthplace",
         "Albert Einstein Nobel Prize year",
     ]
@@ -426,7 +426,7 @@ def test_require_search_true_blocks_no_search_wrong_answer_shaping():
         assert components["final_score"] == 0
 
 
-def test_require_search_true_blocks_malformed_tool_call_shaping():
+def test_require_search_true_blocks_malformed_search_shaping():
     components = qa_em_format.compute_score_components(
         MALFORMED_TOOL_CALL_TRAJECTORY,
         {"target": ["Ulm"]},
@@ -443,24 +443,24 @@ def test_require_search_true_blocks_malformed_tool_call_shaping():
 
 
 @pytest.mark.parametrize(
-    "tool_call",
+    "search_query",
     [
         "search",
         "query",
         "Search Albert Einstein birthplace",
         "query: Albert Einstein birthplace",
         "search(Albert Einstein birthplace)",
-        "tool_call search Albert Einstein birthplace",
-        "tool_call: search(Albert Einstein birthplace)",
+        "tool search Albert Einstein birthplace",
+        "tool: search(Albert Einstein birthplace)",
         "search-P1",
         "query-MIob",
         '{"query": "Albert Einstein birthplace"}',
     ],
 )
-def test_search_query_quality_gate_blocks_pseudo_tool_calls(tool_call):
+def test_search_query_quality_gate_blocks_pseudo_searches(search_query):
     trajectory = MALFORMED_TOOL_CALL_TRAJECTORY.replace(
         "https://example.com/einstein",
-        tool_call,
+        search_query,
     )
     components = qa_em_format.compute_score_components(
         trajectory,
@@ -472,7 +472,7 @@ def test_search_query_quality_gate_blocks_pseudo_tool_calls(tool_call):
         self_consistency_weight=0.05,
     )
 
-    assert qa_em_format.is_valid_search_query(tool_call) is False
+    assert qa_em_format.is_valid_search_query(search_query) is False
     assert components["has_search"] is False
     assert components["self_consistency"] == 0.0
     assert components["track_a_bonus"] == 0.0
@@ -480,7 +480,7 @@ def test_search_query_quality_gate_blocks_pseudo_tool_calls(tool_call):
 
 
 @pytest.mark.parametrize(
-    "tool_call",
+    "search_query",
     [
         "Search-P1 paper contribution",
         "Q-learning algorithm",
@@ -488,11 +488,11 @@ def test_search_query_quality_gate_blocks_pseudo_tool_calls(tool_call):
         "COVID-19 symptoms",
     ],
 )
-def test_search_query_quality_gate_allows_informative_hyphenated_queries(tool_call):
-    assert qa_em_format.is_valid_search_query(tool_call) is True
+def test_search_query_quality_gate_allows_informative_hyphenated_queries(search_query):
+    assert qa_em_format.is_valid_search_query(search_query) is True
 
 
-def test_require_search_true_keeps_structure_shaping_with_legal_tool_call():
+def test_require_search_true_keeps_structure_shaping_with_legal_search():
     components = qa_em_format.compute_score_components(
         PERFECT_TRAJECTORY,
         {"target": ["wrong"]},
@@ -635,9 +635,9 @@ def test_require_search_true_keeps_exact_match_outcome_reward_with_invalid_forma
     "trajectory",
     [
         PERFECT_TRAJECTORY.replace(
-            "<reasoning>I need the birthplace.</reasoning>",
+            "<think>I need the birthplace.</think>",
             "<plan>\nStep 3: Search duplicate planner.\n</plan>\n"
-            "<reasoning>I need the birthplace.</reasoning>",
+            "<think>I need the birthplace.</think>",
         ),
         PERFECT_TRAJECTORY.replace("<plan>", "intro\n<plan>", 1),
         PERFECT_TRAJECTORY.replace("Step 1: Search", "First search"),
@@ -656,7 +656,7 @@ def test_missing_actions_zero_self_consistency():
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I will answer without search.</reasoning>
+<think>I will answer without search.</think>
 <answer>Ulm</answer>"""
 
     components = qa_em_format.compute_self_consistency_components(no_actions)

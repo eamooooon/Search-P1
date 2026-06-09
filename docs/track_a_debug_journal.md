@@ -15,7 +15,7 @@
   - v2 dump 中 planner/action 格式仍不稳定，planner 合法率很低。
   - `<query>` / 旧格式残留下降后，模型仍会产生 no action、unmatched action、partial coverage 等失败样本。
 - 下一步：
-  - 优先修 prompt 和 action format guidance，让模型稳定输出 `<plan>`、`<reasoning>`、`<tool_call>`、`<answer>` 结构。
+  - 优先修 prompt 和 action format guidance，让模型稳定输出 `<plan>`、`<think>`、`<search>`、`<answer>` 结构。
   - 暂不调整 Track A scorer 或把 Track A 纳入 scalar reward，先继续观察格式稳定性和失败归因。
 
 ## 2026-05-14 - Track A 解耦与 `path_bonus` 口径移除
@@ -58,7 +58,7 @@
   - 直接拿原始 parquet 数据跑 Track A analysis 没有可分析样本。
 - 根因：
   - Track A analysis 需要的是 rollout 后的 assistant trajectory，也就是包含 decoded `solution_str` 的 JSONL。
-  - 原始 parquet 只提供训练输入和标签，不包含模型实际生成的 `<plan>`、`<tool_call>`、`<answer>` 序列。
+  - 原始 parquet 只提供训练输入和标签，不包含模型实际生成的 `<plan>`、`<search>`、`<answer>` 序列。
 - 调整：
   - 明确 analysis 脚本读取 rollout trajectory JSONL。
   - 新增 / 使用 trajectory dump，把 reward-time decoded `solution_str` 落盘。
@@ -92,8 +92,8 @@
   - 这不像真实 planner 能力问题，更像 trajectory 串被污染。
 - 根因：
   - invalid feedback 控制文本混入了 final trajectory。
-  - 这些控制文本不是模型生成的合法 `<plan>` / `<tool_call>` / `<answer>` 内容，却进入了 reward parser 和 dump。
-  - 污染文本影响 `<plan>`、`<tool_call>`、`<answer>` tag 计数，导致 planner 校验失败。
+  - 这些控制文本不是模型生成的合法 `<plan>` / `<search>` / `<answer>` 内容，却进入了 reward parser 和 dump。
+  - 污染文本影响 `<plan>`、`<search>`、`<answer>` tag 计数，导致 planner 校验失败。
 - 调整：
   - 区分 rolling prompt 的控制 feedback 和最终 serialized trajectory。
   - 控制文本可以继续给下一轮 prompt 使用，但不能进入 final trajectory / dump。
@@ -112,10 +112,10 @@
 - 调整：
   - rolling prompt 仍保留 invalid / plan-only feedback，帮助模型下一步纠偏。
   - final trajectory / dump mask 掉 control observation。
-  - 真实搜索结果仍以 `<tool_response>` 保留，因为它是环境对合法 tool call 的实际响应，属于训练 trajectory 合约的一部分。
+  - 真实搜索结果仍以 `<information>` 保留，因为它是环境对合法 tool call 的实际响应，属于训练 trajectory 合约的一部分。
 - 验证：
   - v2 dump 中控制文本污染下降。
-  - 真实 `<tool_response>` 不被误删，trajectory 仍能表达工具调用后的环境返回。
+  - 真实 `<information>` 不被误删，trajectory 仍能表达工具调用后的环境返回。
 - 后续观察：
   - 后续新增任何 feedback / control message 时，都要明确它是否允许进入 final trajectory。
 
@@ -125,7 +125,7 @@
   - v2 dump 中仍能看到模型输出 `<query>` 或旧格式残留。
   - 这些输出不符合 Search-P1 当前 action tag 合约。
 - 根因：
-  - 模型仍受旧格式或 prompt 示例影响，未稳定迁移到 `<tool_call>`。
+  - 模型仍受旧格式或 prompt 示例影响，未稳定迁移到 `<search>`。
   - 如果把 `<query>` 兼容成合法动作，会掩盖 action format guidance 的真实问题。
 - 调整：
   - 不把 `<query>` / 旧格式兼容成合法动作。
@@ -173,13 +173,13 @@
 
 - 现象：
   - v2 dump 共 200 条样本，`planner_valid_rate = 0.075`，`self_consistency mean = 0.00375`。
-  - 控制文本污染下降后，模型仍大量输出 `<query>`、`<tool_query>`、嵌套 `<tool_call>`、`tool_call: search(...)`、`/query` 等旧格式或伪工具格式。
+  - 控制文本污染下降后，模型仍大量输出 `<query>`、`<tool_query>`、嵌套 `<search>`、`search: search(...)`、`/query` 等旧格式或伪工具格式。
 - 根因：
-  - 数据 prompt 中仍有 `<tool_call> query </tool_call>` 这类占位式示例，容易让模型把 `query` 或旧 Search-R1 格式当成可复制格式。
+  - 数据 prompt 中仍有 `<search> query </search>` 这类占位式示例，容易让模型把 `query` 或旧 Search-R1 格式当成可复制格式。
   - rollout parser 之前把多类旧格式统一记为 `malformed_action_tag`，无法区分是旧 query tag、Search-R1 legacy tag，还是合法 wrapper 内部内容不合法。
 - 调整：
-  - Search-P1 数据 prompt 改为单个干净正例，`<tool_call>` 内使用具体 plain query，并加入强禁止列表。
-  - action parser 新增 `malformed_query_tag`、`malformed_legacy_tag`、`malformed_tool_call_content`，继续保持 `<query>` 等旧格式非法。
+  - Search-P1 数据 prompt 改为单个干净正例，`<search>` 内使用具体 plain query，并加入强禁止列表。
+  - action parser 新增 `malformed_query_tag`、`malformed_tool_tag`、`malformed_search_content`，继续保持 `<query>` 等旧格式非法。
   - trainer action reason allowlist 同步新增 reason，确保训练 / 验证指标能记录细分桶。
 - 验证：
   - 增加 parser 测试覆盖 `<query>`、`<tool_query>`、`/query`、`<search>`、`<think>`、`<information>`、伪工具调用内容和合法 plain query。
@@ -244,12 +244,12 @@
 
 - 现象：
   - v6 full dump 证明继续增加训练 step 没有解决 `no_actions`，反而出现 invalid planner 坍塌。
-  - 大量样本没有合法 `<tool_call>`，但会伪造 `<tool_response>` 并直接给 `<answer>`，仍可能拿到格式 shaping。
+  - 大量样本没有合法 `<search>`，但会伪造 `<information>` 并直接给 `<answer>`，仍可能拿到格式 shaping。
 - 根因：
   - `require_search_for_format` 只存在于 PRD/spec 设计里，reward scorer 和 P1 GRPO 脚本没有实际透传启用。
   - no-search / 伪造 tool response 的错误答案仍能通过结构或 final 格式分获得正反馈，形成 shortcut。
 - 调整：
-  - 在 `qa_em_format` 中实现 `require_search_for_format` gate：没有合法 `<tool_call>` 搜索查询时，错误答案或无答案轨迹不能获得 structure / retrieval / final format shaping。
+  - 在 `qa_em_format` 中实现 `require_search_for_format` gate：没有合法 `<search>` 搜索查询时，错误答案或无答案轨迹不能获得 structure / retrieval / final format shaping。
   - 保留 exact-match outcome 奖励：正确答案仍按原有高分逻辑处理，避免过度惩罚已知答案。
   - 在 RewardManager、Hydra 默认配置和 P1 GRPO 脚本中透传并启用该开关，同时记录 `has_search`、`effective_structure_format`、`effective_retrieval`。
 - 验证：
@@ -261,7 +261,7 @@
 
 - 现象：
   - v7 证明 `require_search_for_format=true` 已经压住 no-actions / no-search shortcut。
-  - 但部分 `invalid_planner` / invalid sequence 轨迹因为包含合法 `<tool_call>` 或 `<answer>`，错误答案仍能拿到 `final_format_score=0.1`。
+  - 但部分 `invalid_planner` / invalid sequence 轨迹因为包含合法 `<search>` 或 `<answer>`，错误答案仍能拿到 `final_format_score=0.1`。
 - 根因：
   - 上一轮 gate 只要求错误答案拿 format shaping 时有合法 search，没有区分 structural / retrieval shaping 与 final-format shaping。
   - 对 Search-P1 来说，错误答案想拿任何 format shaping，不仅需要合法 search，还必须满足整体轨迹格式合法。
@@ -270,7 +270,7 @@
   - 保持 backward compatibility：`require_search_for_format=false` 时，invalid sequence + wrong answer 仍保留旧的 final-format shaping。
   - 保留 exact-match outcome reward：invalid format 的 EM 正确答案仍按现有 `score - structure_format_score` 逻辑给分。
 - 验证：
-  - 增加 invalid planner + legal `<tool_call>` + wrong `<answer>` 覆盖，确认 false 模式为 `0.1`、true 模式为 `0`。
+  - 增加 invalid planner + legal `<search>` + wrong `<answer>` 覆盖，确认 false 模式为 `0.1`、true 模式为 `0`。
   - 继续覆盖 valid Search-P1 + legal search + wrong answer 在 true 模式下保留 `structure_format_score=0.2`。
 - 后续观察：
   - 用 v8 dump 观察 `invalid_planner` 样本的 `base_score` 分布，重点确认错误答案 invalid-format 轨迹不再靠 `final_format_score` 维持正反馈。
@@ -313,7 +313,7 @@
 ## 2026-05-20 - Track A intent-aware lexical matcher
 
 - 现象：
-  - `lexical` matcher 只能比较 planner 字面 step 和 `<tool_call>` query，遇到“先识别实体，再用搜索结果实例化后续查询”的轨迹时会低估执行覆盖。
+  - `lexical` matcher 只能比较 planner 字面 step 和 `<search>` query，遇到“先识别实体，再用搜索结果实例化后续查询”的轨迹时会低估执行覆盖。
   - 典型样本是 planner 写 `Search [identified actress] character in The Honeymooners.`，实际 action 写 `Joyce Randolph Trixie Norton The Honeymooners`，两者语义连续但字面 overlap 被 placeholder 稀释。
 - 根因：
   - planner step 里有 `[identified ...]` 这类中间实体占位符，以及 identified / target / specific / information 等低信息胶水词。
@@ -347,9 +347,9 @@
   - v11 dump 优先观察 `self_n_plan` 分布、`invalid_planner` 占比和 `base_score` 分布，确认 plan limit 没有误伤短多跳 intent planner。
 ## 2026-05-23 - v12 assistant/environment boundary prompt
 
-- Phenomenon: v11 `no_actions` rose sharply, with samples copying or faking `<tool_response>` instead of stopping after `<tool_call>`.
+- Phenomenon: v11 `no_actions` rose sharply, with samples copying or faking `<information>` instead of stopping after `<search>`.
 - Root cause: the prompt example showed one continuous full trajectory, so the model treated environment observations as assistant output to copy.
-- Adjustment: v12 changes data prompts to role-separated assistant/environment turns. Assistant examples stop at `</tool_call>` and environment-only examples return `<tool_response>`.
+- Adjustment: v12 changes data prompts to role-separated assistant/environment turns. Assistant examples stop at `</search>` and environment-only examples return `<information>`.
 - Verification: run py_compile for data_process prompts, `bash -n` for the GRPO script, and `git diff --check`.
 
 ## 2026-05-24 - v13 Track A small-weight reward
@@ -376,19 +376,19 @@
   - v13 接入 `self_consistency_weight=0.05` 后，Track A 信号明显生效：训练集 `self_consistency` 均值约从 v12 的 `0.039` 提升到 `0.137`，后段 window 提升到约 `0.391`。
   - 但 `base_score` 仍很低，训练集均值约 `0.0025`；大量 complete self-consistent 样本仍是错误答案。
   - complete 样本主要集中在 1-step planner，说明模型可能在学习“短 plan + 一个匹配 action”的 Track A 捷径，而不是稳定提升答案正确性。
-  - action 内容仍不干净，日志中有大量裸 `search`、`Search ...` 前缀、`search(...)`、`tool_call search ...`、嵌套标签或 JSON/function-call 风格内容。
+  - action 内容仍不干净，日志中有大量裸 `search`、`Search ...` 前缀、`search(...)`、`search search ...`、嵌套标签或 JSON/function-call 风格内容。
 - 根因：
   - Track A reward 已经给了路径自洽的正反馈，但合法 action 的质量边界不够一致。
-  - rollout parser 只拦住部分伪工具写法；reward parser 的 `is_valid_search_query` 更宽，可能把一些低质量 `<tool_call>` 当作合法 search 参与 `has_search` 和 self-consistency。
+  - rollout parser 只拦住部分伪工具写法；reward parser 的 `is_valid_search_query` 更宽，可能把一些低质量 `<search>` 当作合法 search 参与 `has_search` 和 self-consistency。
   - 如果继续单纯提高 Track A 权重，模型会更容易优化格式/短路径分，而不是优化检索有效性和最终答案。
 - 调整：
   - v14 不提高 `self_consistency_weight`，继续保持 `0.05`。
-  - 收紧 rollout parser 和 reward parser 的 action quality gate：裸 `search` / `query`、`Search ...` / `query: ...` 前缀、`search(...)`、`tool_call search ...`、`tool_call: search(...)`、`tool_response:`、JSON-like 内容都视为非法 search query。
-  - 保留 plain query，例如 `Albert Einstein birthplace` 仍是合法 `<tool_call>` 内容。
+  - 收紧 rollout parser 和 reward parser 的 action quality gate：裸 `search` / `query`、`Search ...` / `query: ...` 前缀、`search(...)`、`search search ...`、`search: search(...)`、`information:`、JSON-like 内容都视为非法 search query。
+  - 保留 plain query，例如 `Albert Einstein birthplace` 仍是合法 `<search>` 内容。
   - 训练脚本 dump 路径切到 `logs/$EXPERIMENT_NAME-tracka-v14-action-clean-gate-20steps.jsonl`，避免和 v13 混写。
 - 验证：
-  - 增加 reward parser 回归测试，确认伪工具 `<tool_call>` 不产生 `has_search`、`self_consistency`、`track_a_bonus` 或格式 shaping。
-  - 扩展 rollout parser 测试，确认裸 `search`、`Search ...` 和 `tool_call search ...` 归入 `malformed_tool_call_content`。
+  - 增加 reward parser 回归测试，确认伪工具 `<search>` 不产生 `has_search`、`self_consistency`、`track_a_bonus` 或格式 shaping。
+  - 扩展 rollout parser 测试，确认裸 `search`、`Search ...` 和 `search search ...` 归入 `malformed_search_content`。
   - 用 v13 dump 离线重算新 gate，`self_consistency` 从约 `0.150` 降到 `0.067`，complete 从 `2718` 降到 `1297`；这说明 v13 中相当一部分 Track A 分来自低质量 action，新 gate 会先压低但净化信号。
   - 本地已通过 `tests/test_track_a_self_consistency.py`；`tests/test_generation_control_observations.py` 在当前 Windows Python 环境因缺少 `torch` 无法收集，但相关文件已通过 `py_compile`。
 - 后续观察：
@@ -415,7 +415,7 @@
   - v14 dump 共 `22656` 条，其中 train `21888`、val `768`。
   - train complete `1386`，val complete `248`；complete 轨迹仍大多 `base_score=0`，说明 Track A 仍主要改善路径，不直接改善答案正确性。
 - 后续观察：
-  - 比较 v15 时重点看 `plain_query / total tool_call`、`bare_search`、`search_prefix`、`base_score` 是否同步改善。
+  - 比较 v15 时重点看 `plain_query / total search`、`bare_search`、`search_prefix`、`base_score` 是否同步改善。
   - 如果 `base_score` 持续不动，需要引入 outcome-aware gate 或降低 Track A 权重，避免路径分压过答案分。
 
 ## 2026-05-24 - v15 low-information search-prefix query gate
@@ -446,12 +446,12 @@
   - 但 `unmatched_actions` 仍是最大失败项，action quality 中仍有大量 `bare_search`、`search_prefix`、`low_info_search_prefix`、`function_search` 和 `nested_tag`。
 - 根因：
   - parser / reward gate 已经能判错，但 invalid feedback 对模型来说还不够操作化。
-  - 模型知道当前 action 错了，却没有被明确示范下一次 `<tool_call>` 内部应该只写具体 query 内容。
+  - 模型知道当前 action 错了，却没有被明确示范下一次 `<search>` 内部应该只写具体 query 内容。
 - 调整：
-  - 强化 `malformed_tool_call_content` 的 rollout feedback，直接给出 good / bad query content。
+  - 强化 `malformed_search_content` 的 rollout feedback，直接给出 good / bad query content。
   - good 示例只写内容本身：`Albert Einstein birthplace`。
   - bad 示例覆盖当前高频错误：`search`、`Search Albert Einstein birthplace`、`search(Albert Einstein birthplace)`、`search-P1`、`query-MIob`。
-  - 不在 feedback 里放完整 XML 对，避免模型复制 `<tool_call>...</tool_call>` 占位示例。
+  - 不在 feedback 里放完整 XML 对，避免模型复制 `<search>...</search>` 占位示例。
   - dump 路径切到 `tracka-v16-feedback-clean-query-20steps.jsonl`，避免和 v15 append 混写。
 - 验证：
   - 增加 feedback 回归测试，确认包含 concrete plain query 指令、good 示例和高频 bad 示例。
@@ -490,7 +490,7 @@
 - 后续观察：
   - 第一阶段先用模板 A 数据做冷启动，建议训练后用小规模 rollout 评估：planner_valid_rate、plain_query 占比、no_actions、unmatched_actions、base_score。
   - 如果 SFT 后格式稳定但答案仍弱，再补 B 类 clean rollout 轨迹；C 类 LLM synthetic 多跳数据暂时作为第三步，不应先引入过多噪声。
-  - SFT 达到可进入 RL 的最低标准建议是：合法 planner 稳定高于 90%，plain query 占比明显高于 RL 冷启动初期，no_actions 显著下降，并且短 rollout 中不再大面积复制 `<tool_response>` 或伪造工具结果。
+  - SFT 达到可进入 RL 的最低标准建议是：合法 planner 稳定高于 90%，plain query 占比明显高于 RL 冷启动初期，no_actions 显著下降，并且短 rollout 中不再大面积复制 `<information>` 或伪造工具结果。
 
 ## 2026-05-31 - SFT 数据 train/test 切分工具补齐
 
@@ -515,3 +515,55 @@
 - 后续观察：
   - 后续引入 B/C 数据时，推荐先合并成一个 full SFT 文件，再用该工具切分，保证验证集能反映混合数据整体分布。
   - 如果需要严格按数据来源分层切分，可以在 `metadata.sft_type` 或 `metadata.data_source` 上再扩展 stratified split；当前第一版只做随机切分。
+
+## 2026-06-01 - v17 SFT coldstart GRPO 结果分析
+
+- 现象：
+  - 使用 `checkpoints/nq_hotpotqa_p1-search-p1-sft-qwen2.5-3b-it-format/global_step_156` 作为 GRPO 初始模型后，`tracka-v17-coldstart-50steps.jsonl` 相比 v16 明显改善。
+  - v17 总样本 `57216`，其中 `train=56448`、`val=768`，无坏 JSON 行。
+  - v17 train 指标：`self_consistency=0.8042`、`planner_valid_rate=0.8059`、`has_search=0.9998`、`base_score=0.3988`、`final_score=0.5596`。
+  - v17 val 指标：`self_consistency=1.0`、`planner_valid_rate=1.0`、`has_search=1.0`、`base_score=0.4219`、`final_score=0.6219`。
+  - action quality 几乎完全变干净：train 中 `plain_query=89528`，仅有 `overlong=9`、`nested_tag=5`。
+
+- 根因：
+  - SFT 冷启动显著降低了 Search-P1 从零学习轨迹协议的难度。模型已经会稳定产出一跳 plan、reasoning、clean search、information、answer 的模板轨迹。
+  - 但该实验不能严格单独归因于 SFT：`train_grpo_all.sh` 同时把 `BASE_MODEL` 切到 SFT checkpoint，并把 `reward_model.self_consistency_weight` 设为 `0.2`，高于早期部分 v16 run 的 `0.05`，且 v16 50-step 文件显示曾有 `0.3` 权重配置。
+  - v17 SFT 数据是 answer-stub 模板，`base_score` 大幅提高可能包含 answer memorization / train-val distribution overlap / retrieval stub 风格迁移等因素，不能直接等价为真实多跳检索能力提升。
+
+- 分析：
+  - v17 训练早期已经强于 v16：前 5 bucket 的 `self_consistency=0.5137`、`base_score=0.3037`，而 v16_50 前 5 bucket 约为 `self_consistency=0.0094`、`base_score=0.0037`。
+  - v17 在第 31-35 bucket 后基本稳定到接近满分格式：`self_consistency=0.9973`、`planner_valid=0.9983`。
+  - v16_50 即使 50 step 后仍有大量 `no_actions/unmatched_actions`，action quality 中保留大量 `bare_search/search_prefix/low_info/nested`。
+  - v17 的改善方向符合 SFT coldstart 预期：先把格式、clean query 和 Track A 执行一致性拉起来，再让 GRPO 优化。
+
+- 后续观察：
+  - 需要做 ablation 才能确认提升来源：
+    1. SFT checkpoint + `self_consistency_weight=0.05`，验证 SFT 本身贡献。
+    2. 原始 Qwen checkpoint + `self_consistency_weight=0.2`，验证权重贡献。
+    3. SFT checkpoint + val-only / held-out 数据，验证 `base_score` 是否泛化。
+  - 目前 v17 可以证明“冷启动路线有效”，但不能证明“效果完全来自 SFT”。
+  - 下一步优先看 rollout 样本里的答案正确性和数据来源分布，尤其是 `popqa/nq/hotpotqa` 各自的 `base_score`，避免被单一数据源或模板答案泄漏误导。
+
+## 2026-06-01 - v17 SFT/RL 数据重叠排查
+
+- 现象：
+  - 用户担心 v17 改善可能来自 SFT 数据和 RL 数据相同，而不是冷启动真正提升泛化。
+  - 当前 SFT train parquet 共 `10000` 条，全部来自 `data/nq_hotpotqa_p1/train.parquet`。
+  - 当前 SFT val parquet 共 `1000` 条，来自 `data/nq_hotpotqa_p1/test.parquet`，但只用于 SFT validation，不参与训练反传。
+
+- 根因：
+  - A 类 SFT 模板数据确实从原 RL parquet 构造，因此 train split 存在同分布和部分 exact-question overlap。
+  - 但 v17 50-step GRPO dump 中，按 question 文本统计，train 侧 `18816` 个 unique questions 里只有 `1092` 个出现在 SFT train，约 `5.8%`；轨迹行数为 `3276/56448`。
+  - v17 val 侧 `768` 个 unique questions 中，`0` 个出现在 SFT train，`16` 个出现在 SFT val。SFT val 没有梯度更新，因此不等同于训练泄漏；但如果用 SFT val 做 checkpoint 选择，则会影响最终评估严谨性。
+
+- 分析：
+  - exact memorization 不能解释 v17 全局提升，因为绝大多数 v17 train 轨迹和全部 v17 val 轨迹都没有出现在 SFT train 中。
+  - 更合理的解释是：SFT 学到了 Search-P1 的轨迹模板、clean query、不要伪造 information 等结构习惯，使 GRPO 不再从零学习格式。
+  - 仍需承认同分布影响：SFT train 来自 RL train，同一任务分布上的格式迁移会显著降低 RL 难度；这不等价于跨数据集泛化。
+
+- 后续观察：
+  - 为了严格报告，建议重新生成 SFT 时只用原 `train.parquet` 并从 train 内部 split SFT val，完全保留原 `test.parquet` 作为最终 held-out。
+  - 推荐新增三组对照：
+    1. SFT checkpoint 直接 `val_only`，不跑 GRPO，看冷启动本身的 rollout 指标。
+    2. SFT checkpoint + GRPO，在未参与 SFT validation 的 held-out test 子集上评估。
+    3. 原始 Qwen + 同样 `self_consistency_weight=0.2`，用户已观察接近 v16，说明权重 alone 不足。

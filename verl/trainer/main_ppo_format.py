@@ -47,6 +47,7 @@ class RewardManager():
                  path_match_strategy="lexical",
                  require_search_for_format=False,
                  max_plan_steps=None,
+                 max_reference_steps=None,
                  self_consistency_weight=0.0,
                  trajectory_dump_path=None,
                  trajectory_dump_limit=0,
@@ -61,6 +62,7 @@ class RewardManager():
         self.path_match_strategy = path_match_strategy
         self.require_search_for_format = require_search_for_format
         self.max_plan_steps = max_plan_steps
+        self.max_reference_steps = max_reference_steps
         self.self_consistency_weight = self_consistency_weight
         self.trajectory_dump_path = trajectory_dump_path
         self.trajectory_dump_limit = int(trajectory_dump_limit or 0)
@@ -74,17 +76,50 @@ class RewardManager():
             return False
         return self.trajectory_dump_limit < 0 or self._trajectory_dump_count < self.trajectory_dump_limit
 
-    def _dump_trajectory(self, *, solution_str, ground_truth, data_source, components):
+    def _dump_trajectory(self, *, solution_str, ground_truth, data_source, components, prompt=None, extra_info=None):
         if not self._should_dump_trajectory():
             return
+        dump_split = self.trajectory_dump_split
+        dump_index = self._trajectory_dump_count
+        if isinstance(extra_info, dict):
+            dump_split = extra_info.get("split", dump_split)
+            dump_index = extra_info.get("index", dump_index)
+        track_a_components = {
+            key: components[key]
+            for key in (
+                "track_a_bonus",
+                "self_consistency_weight",
+                "self_consistency",
+                "self_r_planner",
+                "self_n_plan",
+                "self_n_actions",
+                "self_n_exec",
+            )
+            if key in components
+        }
+        track_b_components = {
+            key: components[key]
+            for key in (
+                "reference_alignment",
+                "ref_available",
+                "ref_n_steps",
+                "ref_n_actions",
+                "ref_n_covered",
+            )
+            if key in components
+        }
         _append_trajectory_dump(
             self.trajectory_dump_path,
             solution_str=solution_str,
             ground_truth=ground_truth,
             data_source=data_source,
-            split=self.trajectory_dump_split,
-            index=self._trajectory_dump_count,
-            track_a=components,
+            split=dump_split,
+            index=dump_index,
+            track_a=track_a_components,
+            track_b=track_b_components,
+            prompt=prompt,
+            extra_info=extra_info,
+            reward_components=components,
         )
         self._trajectory_dump_count += 1
 
@@ -109,6 +144,11 @@ class RewardManager():
             "self_n_plan": [],
             "self_n_actions": [],
             "self_n_exec": [],
+            "reference_alignment": [],
+            "ref_available": [],
+            "ref_n_steps": [],
+            "ref_n_actions": [],
+            "ref_n_covered": [],
             "final_score": [],
         }
 
@@ -136,6 +176,8 @@ class RewardManager():
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
+            prompt = data_item.non_tensor_batch.get('prompt')
+            extra_info = data_item.non_tensor_batch.get('extra_info', {})
             compute_score_fn = _select_rm_score_fn(data_source)
 
             if compute_score_fn is qa_em_format.compute_score_em:
@@ -149,6 +191,7 @@ class RewardManager():
                     path_match_strategy=self.path_match_strategy,
                     require_search_for_format=self.require_search_for_format,
                     max_plan_steps=self.max_plan_steps,
+                    max_reference_steps=self.max_reference_steps,
                     self_consistency_weight=self.self_consistency_weight,
                 )
                 score = components["final_score"]
@@ -160,6 +203,7 @@ class RewardManager():
                                          format_score=self.format_score,
                                          path_match_strategy=self.path_match_strategy,
                                          require_search_for_format=self.require_search_for_format,
+                                         max_reference_steps=self.max_reference_steps,
                                          self_consistency_weight=self.self_consistency_weight)
                 components = {
                     "base_score": score,
@@ -173,6 +217,11 @@ class RewardManager():
                     "self_n_plan": 0.0,
                     "self_n_actions": 0.0,
                     "self_n_exec": 0.0,
+                    "reference_alignment": 0.0,
+                    "ref_available": 0.0,
+                    "ref_n_steps": 0.0,
+                    "ref_n_actions": 0.0,
+                    "ref_n_covered": 0.0,
                     "final_score": score,
                 }
 
@@ -184,6 +233,8 @@ class RewardManager():
                 ground_truth=ground_truth,
                 data_source=data_source,
                 components=components,
+                prompt=prompt,
+                extra_info=extra_info,
             )
 
             if data_source not in already_print_data_sources:
@@ -207,6 +258,7 @@ def _reward_manager_kwargs(config):
         "path_match_strategy": path_match_strategy,
         "require_search_for_format": getattr(config.reward_model, "require_search_for_format", False),
         "max_plan_steps": getattr(config.reward_model, "max_plan_steps", None),
+        "max_reference_steps": getattr(config.reward_model, "max_reference_steps", None),
         "self_consistency_weight": getattr(config.reward_model, "self_consistency_weight", 0.0),
         "trajectory_dump_path": getattr(config.reward_model, "trajectory_dump_path", None),
         "trajectory_dump_limit": getattr(config.reward_model, "trajectory_dump_limit", 0),

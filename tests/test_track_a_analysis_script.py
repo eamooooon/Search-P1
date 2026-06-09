@@ -9,13 +9,13 @@ PERFECT_TRAJECTORY = """<|im_start|>assistant
 Step 1: Search Albert Einstein birthplace.
 Step 2: Search Albert Einstein Nobel Prize year.
 </plan>
-<reasoning>I need the birthplace.</reasoning>
-<tool_call>Albert Einstein birthplace</tool_call>
-<tool_response>Doc 1 says Ulm.</tool_response>
-<reasoning>I need the Nobel year.</reasoning>
-<tool_call>Albert Einstein Nobel Prize year</tool_call>
-<tool_response>Doc 2 says 1921.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the birthplace.</think>
+<search>Albert Einstein birthplace</search>
+<information>Doc 1 says Ulm.</information>
+<think>I need the Nobel year.</think>
+<search>Albert Einstein Nobel Prize year</search>
+<information>Doc 2 says 1921.</information>
+<think>Now answer.</think>
 <answer>Ulm and 1921</answer>"""
 
 
@@ -23,7 +23,7 @@ NO_ACTION_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Albert Einstein birthplace.
 </plan>
-<reasoning>I will answer without search.</reasoning>
+<think>I will answer without search.</think>
 <answer>Ulm</answer>"""
 
 
@@ -31,9 +31,9 @@ LOW_INFO_TOOL_CALL_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search Search-P1 paper contribution.
 </plan>
-<reasoning>I emit a low-information pseudo query.</reasoning>
-<tool_call>search-P1</tool_call>
-<reasoning>Now answer.</reasoning>
+<think>I emit a low-information pseudo query.</think>
+<search>search-P1</search>
+<think>Now answer.</think>
 <answer>wrong</answer>"""
 
 
@@ -41,10 +41,10 @@ INTENT_INSTANTIATED_TRAJECTORY = """<|im_start|>assistant
 <plan>
 Step 1: Search [identified actress] character in The Honeymooners.
 </plan>
-<reasoning>I need the character for the identified actress.</reasoning>
-<tool_call>Joyce Randolph Trixie Norton The Honeymooners</tool_call>
-<tool_response>Doc 1 says Joyce Randolph played Trixie Norton.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I need the character for the identified actress.</think>
+<search>Joyce Randolph Trixie Norton The Honeymooners</search>
+<information>Doc 1 says Joyce Randolph played Trixie Norton.</information>
+<think>Now answer.</think>
 <answer>Trixie Norton</answer>"""
 
 
@@ -56,10 +56,10 @@ Step 3: Search topic three.
 Step 4: Search topic four.
 Step 5: Search topic five.
 </plan>
-<reasoning>I will execute the first search.</reasoning>
-<tool_call>topic one</tool_call>
-<tool_response>Doc 1 has evidence.</tool_response>
-<reasoning>Now answer.</reasoning>
+<think>I will execute the first search.</think>
+<search>topic one</search>
+<information>Doc 1 has evidence.</information>
+<think>Now answer.</think>
 <answer>wrong</answer>"""
 
 
@@ -97,7 +97,7 @@ def test_track_a_analysis_script_outputs_summary(tmp_path):
     assert summary["planner_valid_rate"] == 1.0
     assert summary["failure_counts"]["complete"] == 1
     assert summary["failure_counts"]["no_actions"] == 1
-    assert payload["action_quality"]["total_tool_calls"] == 2
+    assert payload["action_quality"]["total_searches"] == 2
     assert payload["action_quality"]["counts"]["plain_query"] == 2
     assert payload["buckets"] == []
 
@@ -124,7 +124,7 @@ def test_track_a_analysis_script_reports_action_quality_counts(tmp_path):
     )
 
     action_quality = json.loads(result.stdout)["action_quality"]
-    assert action_quality["total_tool_calls"] == 3
+    assert action_quality["total_searches"] == 3
     assert action_quality["counts"]["plain_query"] == 2
     assert action_quality["counts"]["low_info_search_prefix"] == 1
 

@@ -2,12 +2,12 @@
 set -euo pipefail
 
 WORK_DIR=${WORK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
-LOCAL_DIR=${LOCAL_DIR:-$WORK_DIR/data/nq_hotpotqa_p1}
+LOCAL_DIR=${LOCAL_DIR:-$WORK_DIR/data/hotpotqa_p1}
 
 mkdir -p "$LOCAL_DIR"
 
-TRAIN_DATA=${TRAIN_DATA:-nq,hotpotqa}
-TEST_DATA=${TEST_DATA:-nq,triviaqa,popqa,hotpotqa,2wikimultihopqa,musique,bamboogle}
+TRAIN_DATA=${TRAIN_DATA:-hotpotqa}
+TEST_DATA=${TEST_DATA:-2wikimultihopqa,musique,bamboogle}
 MAX_REFERENCE_STEPS=${MAX_REFERENCE_STEPS:-4}
 
 REFERENCE_ARGS=()

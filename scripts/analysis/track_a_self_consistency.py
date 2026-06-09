@@ -32,8 +32,8 @@ ACTION_QUALITY_REASONS = (
     "search_prefix",
     "low_info_search_prefix",
     "function_search",
-    "tool_call_prefix",
-    "tool_response_text",
+    "tool_prefix",
+    "tool_observation_text",
     "nested_tag",
     "json_like",
     "url",
@@ -98,13 +98,13 @@ def extract_assistant_content(text: str):
     return text
 
 
-def extract_model_tool_calls(text: str):
+def extract_model_searches(text: str):
     content = extract_assistant_content(text)
-    content = re.sub(r"<tool_response>.*?</tool_response>", "", content, flags=re.DOTALL)
-    return [match.strip() for match in re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)]
+    content = re.sub(r"<information>.*?</information>", "", content, flags=re.DOTALL)
+    return [match.strip() for match in re.findall(r"<search>(.*?)</search>", content, re.DOTALL)]
 
 
-def classify_tool_call_content(query: str):
+def classify_search_content(query: str):
     query = query.strip() if query else ""
     if not query:
         return "empty"
@@ -118,12 +118,12 @@ def classify_tool_call_content(query: str):
         return "bare_search"
     if re.fullmatch(r"(?:search|query)-[^\s]+", query, re.IGNORECASE):
         return "low_info_search_prefix"
-    if re.search(r"\btool_call\s*:?\s*search\b|^\s*tool_call\b", query, re.IGNORECASE):
-        return "tool_call_prefix"
+    if re.search(r"\b(?:tool|function)\s*:?\s*search\b|^\s*(?:tool|function)\b", query, re.IGNORECASE):
+        return "tool_prefix"
     if re.search(r"\bsearch\s*\(", query, re.IGNORECASE):
         return "function_search"
-    if re.search(r"\btool_response\s*:", query, re.IGNORECASE):
-        return "tool_response_text"
+    if re.search(r"\binformation\s*:", query, re.IGNORECASE):
+        return "tool_observation_text"
     if re.search(r"^\s*(?:query|search)\s*:?\s+(?!engine\b)", query, re.IGNORECASE):
         return "search_prefix"
     if (query.startswith("{") and query.endswith("}")) or (
@@ -202,8 +202,8 @@ def analyze_rows(rows, reward_module, match_strategy: str, max_plan_steps: Optio
         if solution_str is None:
             missing_solution += 1
             continue
-        for tool_call in extract_model_tool_calls(solution_str):
-            action_quality_counts[classify_tool_call_content(tool_call)] += 1
+        for search_query in extract_model_searches(solution_str):
+            action_quality_counts[classify_search_content(search_query)] += 1
 
         components = reward_module.compute_self_consistency_components(
             solution_str,
@@ -267,7 +267,7 @@ def summarize(records: list[dict], failure_counts: Counter):
 def summarize_action_quality(action_quality_counts: Counter):
     total = sum(action_quality_counts.values())
     return {
-        "total_tool_calls": total,
+        "total_searches": total,
         "counts": {
             reason: action_quality_counts.get(reason, 0)
             for reason in ACTION_QUALITY_REASONS
@@ -356,7 +356,7 @@ def print_summary(
 
     print("")
     print("Action quality:")
-    print(f"  total_tool_calls: {action_quality['total_tool_calls']}")
+    print(f"  total_searches: {action_quality['total_searches']}")
     for reason, count in action_quality["counts"].items():
         if count:
             print(f"  {reason}: {count}")

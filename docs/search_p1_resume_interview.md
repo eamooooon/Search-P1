@@ -26,9 +26,9 @@
 
 **核心成果 / 简历 Bullets**：
 
-- 主导构建 Search-Agent RL 轨迹合约，将训练输出组织为 front-loaded `<plan>`、后续 `<reasoning>/<tool_call>/<tool_response>/<answer>` 的 plan-once 序列；支持 plan-only 首阶段接收合法 planner 但不触发检索，并严格区分模型 action `<tool_call>` 与环境 observation `<tool_response>`，同步 rollout parser、reward parser、response masking、trainer metrics 与 trajectory dump，降低奖励解析和真实执行路径不一致的风险。
-- 设计双轨 path reward：Track A self-consistency 比较模型自声明 planner steps 与实际 `<tool_call>`，度量计划执行度和 action efficiency；Track B reference-alignment 比较实际 `<tool_call>` 与外部 `reference_steps`，度量关键搜索步骤覆盖率；两条信号保持解耦，后续通过 `R_path=max(S_self,S_ref)` 聚合，并配套 `intent_lexical`、`max_plan_steps`、`require_search_for_format` 等约束抑制 no-search shortcut 和低质量工具调用。
-- 建立工程诊断与实验闭环，输出完整 trajectory dump、ground truth、data source、split、Track A/Track B 组件分和 invalid action reason，定位 `missing_plan`、`duplicate_plan`、`malformed_tool_call_content`、no-search shortcut 等失败模式；构建 `reference_steps` 的候选生成、清洗、parquet 注入和 coverage check 流程，并用 `[N]` 组 short-run / 消融实验跟踪 `planner_valid_rate`、`valid_search ratio`、`invalid_action ratio`、`self_consistency`、`reference_alignment` 与 `[EM/F1/Score]`。
+- 主导构建 Search-Agent RL 轨迹合约，将训练输出组织为 front-loaded `<plan>`、后续 `<think>/<search>/<information>/<answer>` 的 plan-once 序列；支持 plan-only 首阶段接收合法 planner 但不触发检索，并严格区分模型 action `<search>` 与环境 observation `<information>`，同步 rollout parser、reward parser、response masking、trainer metrics 与 trajectory dump，降低奖励解析和真实执行路径不一致的风险。
+- 设计双轨 path reward：Track A self-consistency 比较模型自声明 planner steps 与实际 `<search>`，度量计划执行度和 action efficiency；Track B reference-alignment 比较实际 `<search>` 与外部 `reference_steps`，度量关键搜索步骤覆盖率；两条信号保持解耦，后续通过 `R_path=max(S_self,S_ref)` 聚合，并配套 `intent_lexical`、`max_plan_steps`、`require_search_for_format` 等约束抑制 no-search shortcut 和低质量工具调用。
+- 建立工程诊断与实验闭环，输出完整 trajectory dump、ground truth、data source、split、Track A/Track B 组件分和 invalid action reason，定位 `missing_plan`、`duplicate_plan`、`malformed_search_content`、no-search shortcut 等失败模式；构建 `reference_steps` 的候选生成、清洗、parquet 注入和 coverage check 流程，并用 `[N]` 组 short-run / 消融实验跟踪 `planner_valid_rate`、`valid_search ratio`、`invalid_action ratio`、`self_consistency`、`reference_alignment` 与 `[EM/F1/Score]`。
 
 ## 可量化指标占位清单
 
@@ -46,19 +46,19 @@
 
 Search-P1 面向的是 Tool-Use Agent RL 里的路径学习问题。Search-R1 已经把搜索动作放进 rollout，让模型学习何时搜索、搜什么、何时回答，但 reward 主要看最终答案和格式，失败样本通常缺少路径级学习信号。Search-P1 的关键是把搜索路径显式化：先要求模型写 front-loaded planner，再执行 tool call，并用 path-centric reward 判断路径是否合理。
 
-我的设计拆成三层：轨迹结构层、路径评分层和实验诊断层。轨迹层保证 `<plan>/<reasoning>/<tool_call>/<tool_response>/<answer>` 能被训练闭环稳定解析；评分层实现 Track A self-consistency 和 Track B reference-alignment；诊断层通过 trajectory dump、invalid action reason 和消融指标判断分数变化来自路径质量、格式改善、检索质量还是答案本身。
+我的设计拆成三层：轨迹结构层、路径评分层和实验诊断层。轨迹层保证 `<plan>/<think>/<search>/<information>/<answer>` 能被训练闭环稳定解析；评分层实现 Track A self-consistency 和 Track B reference-alignment；诊断层通过 trajectory dump、invalid action reason 和消融指标判断分数变化来自路径质量、格式改善、检索质量还是答案本身。
 
 ### 2. Search-P1 和 Search-R1 / 普通 RAG 的区别是什么？
 
 普通 RAG 多数是在推理时检索上下文再回答，检索过程通常不是 RL 训练中的可学习 action。Search-R1 把搜索动作接入 RL rollout，让模型在生成过程中主动调用搜索工具。Search-P1 在 Search-R1 基础上进一步要求模型先给出可解析 planner，再执行搜索动作，使路径从自由文本变成可校验、可评分、可诊断的训练对象。
 
-工程上，Search-P1 不只是换 prompt。它要求数据 prompt、rollout action parser、环境 observation 注入、reward parser、masking marker 和 trainer metrics 使用同一套标签。尤其要区分 `<tool_call>` 是模型动作，`<tool_response>` 是环境返回；如果两者边界混乱，reward 读到的就不是模型实际执行的路径。
+工程上，Search-P1 不只是换 prompt。它要求数据 prompt、rollout action parser、环境 observation 注入、reward parser、masking marker 和 trainer metrics 使用同一套标签。尤其要区分 `<search>` 是模型动作，`<information>` 是环境返回；如果两者边界混乱，reward 读到的就不是模型实际执行的路径。
 
 ### 3. 轨迹构造为什么要用 front-loaded planner 和 plan-once？
 
 front-loaded planner 让模型在搜索前先声明搜索意图，Track A 才能比较“计划里说要查什么”和“实际 tool call 查了什么”。plan-once 则避免模型每轮重写 planner 来追逐已经拿到的检索结果，否则 self-consistency 会被事后修正的计划污染。
 
-rollout 里保留 plan-only 首阶段：第一轮如果只有合法 `<plan>` 且还有后续 step，就接受为有效 planner，但不触发检索，也不把控制提示写进最终 trajectory。后续轮次必须输出 `<reasoning>` 加 `<tool_call>` 或 `<answer>`。这样既允许模型先完整规划，又保证 reward parser 看到的最终序列仍是干净的 `<plan>/<reasoning>/<tool_call>/<tool_response>/<answer>` 合约。
+rollout 里保留 plan-only 首阶段：第一轮如果只有合法 `<plan>` 且还有后续 step，就接受为有效 planner，但不触发检索，也不把控制提示写进最终 trajectory。后续轮次必须输出 `<think>` 加 `<search>` 或 `<answer>`。这样既允许模型先完整规划，又保证 reward parser 看到的最终序列仍是干净的 `<plan>/<think>/<search>/<information>/<answer>` 合约。
 
 ### 4. Track A 和 Track B 分别解决什么问题？
 
@@ -91,9 +91,9 @@ R_path = max(S_self, S_ref)
 
 ### 6. 训练闭环是怎么跑起来的？
 
-数据侧先构造要求模型输出 `<plan>` 的 prompt。rollout 阶段模型先生成 planner，再生成 `<reasoning>` 和 `<tool_call>`；环境读取 tool call 内容请求 retriever，把真实检索结果包装为 `<tool_response>` 注入下一轮上下文。最后模型输出 `<answer>`，reward parser 从完整 trajectory 中解析 planner、actions、observations 和 answer。
+数据侧先构造要求模型输出 `<plan>` 的 prompt。rollout 阶段模型先生成 planner，再生成 `<think>` 和 `<search>`；环境读取 tool call 内容请求 retriever，把真实检索结果包装为 `<information>` 注入下一轮上下文。最后模型输出 `<answer>`，reward parser 从完整 trajectory 中解析 planner、actions、observations 和 answer。
 
-关键状态是 `planner_seen`。如果第一轮只输出合法 planner 且还有后续 step，系统接受为 plan-only 阶段，不触发搜索；后续轮次必须输出 reasoning 加 tool call 或 answer。invalid action 会被分桶统计，例如 `missing_plan`、`duplicate_plan`、`missing_or_invalid_plan_steps`、`malformed_tool_call_content`，用于定位训练失败来源。
+关键状态是 `planner_seen`。如果第一轮只输出合法 planner 且还有后续 step，系统接受为 plan-only 阶段，不触发搜索；后续轮次必须输出 reasoning 加 tool call 或 answer。invalid action 会被分桶统计，例如 `missing_plan`、`duplicate_plan`、`missing_or_invalid_plan_steps`、`malformed_search_content`，用于定位训练失败来源。
 
 ### 7. 你如何设计实验？
 
@@ -129,9 +129,9 @@ R_path = max(S_self, S_ref)
 
 ### 2. retriever 服务
 
-**问题**：retriever endpoint 配错、服务未启动、topk 不一致、返回 schema 与环境解析不匹配，导致 `<tool_response>` 为空或 rollout 大量超时。
+**问题**：retriever endpoint 配错、服务未启动、topk 不一致、返回 schema 与环境解析不匹配，导致 `<information>` 为空或 rollout 大量超时。
 
-**解决方法**：训练前用固定 query 调 `/retrieve` 做健康检查；记录 `url/topk/index/version`；对空结果和超时做日志分桶；确保环境只把真实检索结果包装为 `<tool_response>`，不要把控制提示误当 observation。
+**解决方法**：训练前用固定 query 调 `/retrieve` 做健康检查；记录 `url/topk/index/version`；对空结果和超时做日志分桶；确保环境只把真实检索结果包装为 `<information>`，不要把控制提示误当 observation。
 
 ### 3. 数据处理 / Arrow schema
 
@@ -153,15 +153,15 @@ R_path = max(S_self, S_ref)
 
 ### 6. invalid action
 
-**问题**：模型生成空 action、缺 `<reasoning>`、tool call 内含 JSON/function-call、URL、嵌套标签、`Search ...` 前缀或低信息 query，导致大量 `invalid_action`。
+**问题**：模型生成空 action、缺 `<think>`、tool call 内含 JSON/function-call、URL、嵌套标签、`Search ...` 前缀或低信息 query，导致大量 `invalid_action`。
 
-**解决方法**：把 invalid reason 分成稳定 bucket，例如 `missing_reasoning`、`missing_action_tag`、`malformed_legacy_tag`、`malformed_tool_call_content`；按 bucket 调 prompt 和 parser feedback；避免 feedback 中包含完整可复制标签，降低模型照抄控制文本的概率。
+**解决方法**：把 invalid reason 分成稳定 bucket，例如 `missing_think`、`missing_action_tag`、`malformed_tool_tag`、`malformed_search_content`；按 bucket 调 prompt 和 parser feedback；避免 feedback 中包含完整可复制标签，降低模型照抄控制文本的概率。
 
 ### 7. no-search shortcut
 
 **问题**：模型写合法 planner 后不调用搜索，直接输出 answer，却仍可能拿到结构格式分。
 
-**解决方法**：训练脚本启用 `require_search_for_format=true`；wrong-answer 且无 `<tool_call>` 时不给 structure / retrieval / final-format shaping；监控 `has_search`、`effective_structure_format` 和 no-search wrong-answer 样本；必要时在 prompt 中强调至少一次必要搜索。
+**解决方法**：训练脚本启用 `require_search_for_format=true`；wrong-answer 且无 `<search>` 时不给 structure / retrieval / final-format shaping；监控 `has_search`、`effective_structure_format` 和 no-search wrong-answer 样本；必要时在 prompt 中强调至少一次必要搜索。
 
 ### 8. Track A 分数上升但 EM 不升
 
@@ -173,7 +173,7 @@ R_path = max(S_self, S_ref)
 
 **问题**：拒绝采样样本太少、reference_steps 过长或含标签、parquet 注入位置错误，训练时 `reference_available_ratio` 为 0。
 
-**解决方法**：先从最终答案正确且包含合法 `<tool_call>` 的轨迹生成候选；对 reference_steps 做长度、重复、URL、标签和空 step 清洗；统一写入 `reward_model.ground_truth.reference_steps`；训练前跑 coverage check，确认样本级 available ratio 和字段 schema。
+**解决方法**：先从最终答案正确且包含合法 `<search>` 的轨迹生成候选；对 reference_steps 做长度、重复、URL、标签和空 step 清洗；统一写入 `reward_model.ground_truth.reference_steps`；训练前跑 coverage check，确认样本级 available ratio 和字段 schema。
 
 ### 10. LLM voting 失败
 

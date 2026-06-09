@@ -1,11 +1,19 @@
 import importlib
 import sys
 import types
+from pathlib import Path
 
 import torch
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
 def load_generation_module():
+    module_names = ["verl", "verl.utils", "verl.utils.tracking"]
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
     verl_module = types.ModuleType("verl")
 
     class DataProto:
@@ -23,7 +31,14 @@ def load_generation_module():
     tracking_module.Tracking = Tracking
     sys.modules["verl.utils.tracking"] = tracking_module
 
-    return importlib.import_module("search_p1.llm_agent.generation")
+    try:
+        return importlib.import_module("search_p1.llm_agent.generation")
+    finally:
+        for name, module in previous_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 generation = load_generation_module()
@@ -36,14 +51,14 @@ def make_manager():
     return manager
 
 
-def test_control_observations_are_masked_but_tool_response_is_kept():
+def test_control_observations_are_masked_but_information_is_kept():
     manager = make_manager()
     predictions = [
         "<plan>\nStep 1: Search France capital.\n</plan>\n"
-        "<reasoning>I need evidence.</reasoning><tool_call>France capital</tool_call>",
+        "<think>I need evidence.</think><search>France capital</search>",
         "<plan>\nStep 1: Search France capital.\n</plan>",
         "<plan>\nStep 1: Search France capital.\n</plan>\n"
-        "<reasoning>I use an old action tag.</reasoning><query>France capital</query>",
+        "<think>I use an invalid query tag.</think><query>France capital</query>",
     ]
 
     next_obs, _, _, is_search, _, reasons = manager.execute_predictions(
@@ -57,7 +72,7 @@ def test_control_observations_are_masked_but_tool_response_is_kept():
 
     assert reasons == ["valid_search", "valid_plan", "malformed_query_tag"]
     assert is_search == [1, 0, 0]
-    assert "<tool_response>Doc for France capital</tool_response>" in next_obs[0]
+    assert "<information>Doc for France capital</information>" in next_obs[0]
     assert "Plan accepted." in next_obs[1]
     assert "My previous action is invalid." in next_obs[2]
 
@@ -82,8 +97,8 @@ def test_query_formats_stay_invalid_and_are_reported_as_malformed_query_tag():
 
     actions, contents, reasons = manager.postprocess_predictions(
         [
-            "<reasoning>Old format.</reasoning><query>France capital</query>",
-            "<reasoning>Old format.</reasoning><tool_query>France capital</tool_query>",
+            "<think>Old format.</think><query>France capital</query>",
+            "<think>Old format.</think><lookup>France capital</lookup>",
             "/query France capital",
         ],
         planner_seen=[True, True, True],
@@ -95,17 +110,17 @@ def test_query_formats_stay_invalid_and_are_reported_as_malformed_query_tag():
     assert contents == ["", "", ""]
     assert reasons == [
         "malformed_query_tag",
-        "malformed_query_tag",
+        "malformed_tool_tag",
         "malformed_query_tag",
     ]
 
 
-def test_legacy_tags_are_reported_as_malformed_legacy_tag():
+def test_search_r1_tags_are_accepted_for_actions():
     manager = make_manager()
 
     actions, contents, reasons = manager.postprocess_predictions(
         [
-            "<reasoning>Old format.</reasoning><search>France capital</search>",
+            "<think>Need evidence.</think><search>France capital</search>",
             "<think>Need evidence.</think>",
             "<information>Doc text.</information>",
         ],
@@ -114,32 +129,32 @@ def test_legacy_tags_are_reported_as_malformed_legacy_tag():
         return_reasons=True,
     )
 
-    assert actions == [None, None, None]
-    assert contents == ["", "", ""]
+    assert actions == ["search", None, None]
+    assert contents == ["France capital", "", ""]
     assert reasons == [
-        "malformed_legacy_tag",
-        "malformed_legacy_tag",
-        "malformed_legacy_tag",
+        "valid_search",
+        "missing_action_tag",
+        "missing_action_tag",
     ]
 
 
-def test_malformed_tool_call_content_is_reported_separately():
+def test_malformed_search_content_is_reported_separately():
     manager = make_manager()
 
     actions, contents, reasons = manager.postprocess_predictions(
         [
-            "<reasoning>Need evidence.</reasoning>"
-            "<tool_call>tool_call: search(France capital)</tool_call>",
-            "<reasoning>Need evidence.</reasoning>"
-            "<tool_call>tool_response: Doc text</tool_call>",
-            "<reasoning>Need evidence.</reasoning>"
-            "<tool_call>search</tool_call>",
-            "<reasoning>Need evidence.</reasoning>"
-            "<tool_call>Search France capital</tool_call>",
-            "<reasoning>Need evidence.</reasoning>"
-            "<tool_call>tool_call search France capital</tool_call>",
-            "<reasoning>Need evidence.</reasoning>"
-            "<tool_call>search-P1</tool_call>",
+            "<think>Need evidence.</think>"
+            "<search>tool: search(France capital)</search>",
+            "<think>Need evidence.</think>"
+            "<search>information: Doc text</search>",
+            "<think>Need evidence.</think>"
+            "<search>search</search>",
+            "<think>Need evidence.</think>"
+            "<search>Search France capital</search>",
+            "<think>Need evidence.</think>"
+            "<search>tool search France capital</search>",
+            "<think>Need evidence.</think>"
+            "<search>search-P1</search>",
         ],
         planner_seen=[True, True, True, True, True, True],
         active_mask=[True, True, True, True, True, True],
@@ -149,20 +164,20 @@ def test_malformed_tool_call_content_is_reported_separately():
     assert actions == [None, None, None, None, None, None]
     assert contents == ["", "", "", "", "", ""]
     assert reasons == [
-        "malformed_tool_call_content",
-        "malformed_tool_call_content",
-        "malformed_tool_call_content",
-        "malformed_tool_call_content",
-        "malformed_tool_call_content",
-        "malformed_tool_call_content",
+        "malformed_search_content",
+        "malformed_search_content",
+        "malformed_search_content",
+        "malformed_search_content",
+        "malformed_search_content",
+        "malformed_search_content",
     ]
 
 
-def test_plain_tool_call_query_is_valid_search():
+def test_plain_search_query_is_valid_search():
     manager = make_manager()
 
     actions, contents, reasons = manager.postprocess_predictions(
-        ["<reasoning>Need evidence.</reasoning><tool_call>Albert Einstein birthplace</tool_call>"],
+        ["<think>Need evidence.</think><search>Albert Einstein birthplace</search>"],
         planner_seen=[True],
         active_mask=[True],
         return_reasons=True,
@@ -179,8 +194,8 @@ def test_trainer_action_reason_allowlist_includes_malformed_buckets():
 
     for reason in [
         "malformed_query_tag",
-        "malformed_legacy_tag",
-        "malformed_tool_call_content",
+        "malformed_tool_tag",
+        "malformed_search_content",
     ]:
         assert reason in trainer_source
 
@@ -191,11 +206,11 @@ def test_feedback_avoids_full_xml_pair_examples():
         manager.PLAN_ACCEPTED_OBSERVATION,
         manager._invalid_action_observation(False, "missing_plan"),
         manager._invalid_action_observation(True, "malformed_action_tag"),
-        manager._invalid_action_observation(True, "malformed_tool_call_content"),
+        manager._invalid_action_observation(True, "malformed_search_content"),
     ]
 
     forbidden_pairs = [
-        "<tool_call>...</tool_call>",
+        "<search>...</search>",
         "<answer>...</answer>",
         "<plan>...</plan>",
     ]
@@ -204,9 +219,9 @@ def test_feedback_avoids_full_xml_pair_examples():
             assert pair not in feedback
 
 
-def test_malformed_tool_call_feedback_teaches_plain_query_recovery():
+def test_malformed_search_feedback_teaches_plain_query_recovery():
     manager = make_manager()
-    feedback = manager._invalid_action_observation(True, "malformed_tool_call_content")
+    feedback = manager._invalid_action_observation(True, "malformed_search_content")
 
     assert "concrete plain query" in feedback
     assert "Good query content: Albert Einstein birthplace." in feedback

@@ -29,13 +29,27 @@ def make_prefix(dp, template_type):
     # NOTE: also need to change reward_score/countdown.py
     if template_type == 'base':
         """This works for any base model"""
-        prefix = f"""Answer the given question. \
-Before any search, output exactly one complete plan block at the beginning. The planner contains numbered Step N: Search ... search-intent steps. Each step is one executable search goal, not necessarily the exact final query. If a later search depends on an unknown intermediate result, use placeholders like [identified actor], [identified film], or [target entity]. Do not list fallback branches, year-by-year searches, episode-by-episode searches, or long exhaustive lists. Keep the plan short and executable. \
-After the plan, each action turn must contain one reasoning block followed immediately by either one tool_call block for search or one answer block for the final answer. \
-The text inside tool_call must be only a plain search query. It must not contain a query prefix, search(...), search-xxx/query-xxx pseudo prefixes, any tag, a tool name, JSON/function-call text, a URL, or tool_response text. \
-The assistant must never output <tool_response>. <tool_response> is returned only by the environment after a valid <tool_call>. When searching, assistant output must stop immediately after </tool_call> and wait for the environment. Do not invent observations or documents. \
-Never output <query>, </query>, <tool_query>, </tool_query>, <search>, <think>, <information>, /query, tool_call: search, tool_response:, short search-xxx/query-xxx pseudo queries, or JSON/function-call style tool calls. These are invalid. \
-Use role-separated Search-P1 turns like this. Assistant output: <plan>\nStep 1: Search That Touch of Mink cast to identify the relevant actress.\nStep 2: Search [identified actress] role in The Honeymooners.\n</plan>\n<reasoning>I need to identify the actress from the film cast.</reasoning>\n<tool_call>That Touch of Mink cast</tool_call>\nEnvironment returns: <tool_response>Doc 1(Title: That Touch of Mink) The cast includes Joyce Randolph.</tool_response>\nAssistant output: <reasoning>Now I need her role in The Honeymooners.</reasoning>\n<tool_call>Joyce Randolph The Honeymooners role</tool_call>\nEnvironment returns: <tool_response>Doc 2(Title: Joyce Randolph) Joyce Randolph played Trixie Norton.</tool_response>\nAssistant output: <reasoning>The evidence is sufficient, so I can answer.</reasoning>\n<answer>Trixie Norton</answer>\nQuestion: {question}\n"""
+        prefix = f"""You are a meticulous Deep Research Agent. Answer the question by planning, searching, reading evidence, and giving a concise final answer.
+## CRITICAL INSTRUCTIONS
+1. Detailed Planning (<plan>):
+- In the first turn, output exactly one complete plan block.
+- Break the question into executable search-intent steps.
+- Use numbered lines in the form: Step N: Search ...
+- Focus on one sub-question at a time.
+2. Step-by-Step Execution (<search>):
+- After the plan, each assistant turn must contain one <think> block followed by either one <search> block or one <answer> block.
+- Execute only one plain natural language search query per turn.
+- After receiving <information>, use <think> to decide whether the evidence is sufficient or another search is needed.
+3. Evidence Boundary:
+- <information> is returned only by the environment after a valid <search>.
+- When you finish </search>, stop and wait for the environment.
+- Do not invent observations or documents.
+4. Final Answer (<answer>):
+- Output <answer> only when the necessary information is gathered.
+- Keep the final answer concrete and short.
+## CURRENT TASK
+Question: {question}
+"""
     else:
         raise NotImplementedError
     return prefix

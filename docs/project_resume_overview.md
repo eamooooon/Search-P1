@@ -46,9 +46,9 @@ Search-R1 常见口径使用如下模型可见标签：
 
 | Search-R1 常见标签 | Search-P1 标签 | 含义 |
 | --- | --- | --- |
-| `<think>` | `<reasoning>` | 工具调用或最终答案前的推理 |
-| `<search>` | `<tool_call>` | 模型发出的搜索动作，内容是 query |
-| `<information>` | `<tool_response>` | 环境注入的检索 observation |
+| `<think>` | `<think>` | 工具调用或最终答案前的推理 |
+| `<search>` | `<search>` | 模型发出的搜索动作，内容是 query |
+| `<information>` | `<information>` | 环境注入的检索 observation |
 | `<answer>` | `<answer>` | 最终答案 |
 
 需要注意：上面对 Search-R1 的描述来自 repo README 与该类方法的 baseline 口径；具体 Search-R1 论文中的全部实验细节不是本文重点，也不在这里扩写成已验证事实。
@@ -103,10 +103,10 @@ Planner -> Reasoning -> Tool Call -> Tool Response -> Answer
 Step 1: Search ...
 Step 2: Search ...
 </plan>
-<reasoning>...</reasoning>
-<tool_call>...</tool_call>
-<tool_response>...</tool_response>
-<reasoning>...</reasoning>
+<think>...</think>
+<search>...</search>
+<information>...</information>
+<think>...</think>
 <answer>...</answer>
 ```
 
@@ -124,17 +124,17 @@ T = (p, r_1, a_1, o_1, ..., r_n, a_n, o_n, r_final, a_hat)
 
 当前 repo 已经在设计文档和核心代码中统一了 Search-P1 标签：
 
-- `<think>` -> `<reasoning>`
-- `<search>` -> `<tool_call>`
-- `<information>` -> `<tool_response>`
+- `<think>` -> `<think>`
+- `<search>` -> `<search>`
+- `<information>` -> `<information>`
 
 同步点包括：
 
-- 数据 prompt：`scripts/data_process/qa_search_train_merge.py`、`qa_search_test_merge.py`、`nq_search.py` 已提示模型先输出 `<plan>`，后续使用 `<reasoning>/<tool_call>/<tool_response>/<answer>`。
-- rollout parser：`search_p1/llm_agent/generation.py` 的 `postprocess_predictions` 只解析 `<tool_call>` 和 `<answer>` 作为 action tag；旧的 `<query>/<search>/<think>/<information>` 会进入 `malformed_action_tag`。
-- 环境 observation：搜索结果被注入为 `<tool_response>...</tool_response>`。
-- reward parser：`verl/utils/reward_score/qa_em_format.py` 的状态机校验 `<plan>/<reasoning>/<tool_call>/<tool_response>/<answer>` 顺序，并且 `extract_tool_calls` 会先移除 `<tool_response>` block，避免把 observation 里的伪 `<tool_call>` 当作模型 action。
-- masking 配置：`verl/trainer/config/ppo_trainer.yaml` 使用 `<tool_response>` 作为 state masking marker。
+- 数据 prompt：`scripts/data_process/qa_search_train_merge.py`、`qa_search_test_merge.py`、`nq_search.py` 已提示模型先输出 `<plan>`，后续使用 `<think>/<search>/<information>/<answer>`。
+- rollout parser：`search_p1/llm_agent/generation.py` 的 `postprocess_predictions` 只解析 `<search>` 和 `<answer>` 作为 action tag；旧的 `<query>/<search>/<think>/<information>` 会进入 `malformed_action_tag`。
+- 环境 observation：搜索结果被注入为 `<information>...</information>`。
+- reward parser：`verl/utils/reward_score/qa_em_format.py` 的状态机校验 `<plan>/<think>/<search>/<information>/<answer>` 顺序，并且 `extract_search_calls` 会先移除 `<information>` block，避免把 observation 里的伪 `<search>` 当作模型 action。
+- masking 配置：`verl/trainer/config/ppo_trainer.yaml` 使用 `<information>` 作为 state masking marker。
 
 这部分是很重要的工程工作，因为 rollout、reward、trainer 三层只要有一层仍按旧标签解析，训练数据流就会出现隐性错配。
 
@@ -155,7 +155,7 @@ Step 2: Search ...
 - 只能出现一次。
 - 每个非空 step 必须符合 `Step N: Search ...`。
 - step 编号从 1 开始连续递增。
-- planner 内不能嵌套 `<reasoning>/<tool_call>/<tool_response>/<answer>` 等标签。
+- planner 内不能嵌套 `<think>/<search>/<information>/<answer>` 等标签。
 
 在 rollout 侧，`LLMGenerationManager.run_llm_loop` 初始化 `planner_seen`，用它追踪每个样本是否已经接受过合法 plan。这个状态会影响 action parser 和 invalid feedback：
 
@@ -174,22 +174,22 @@ Step 2: Search ...
 </plan>
 ```
 
-如果该 plan 合法，并且本轮没有合法 `<tool_call>` 或 `<answer>`，rollout 会把它作为 `valid_plan` 接受：
+如果该 plan 合法，并且本轮没有合法 `<search>` 或 `<answer>`，rollout 会把它作为 `valid_plan` 接受：
 
 - 不触发搜索。
 - 不结束 trajectory。
 - `valid_action=1`。
 - `is_search=0`。
-- 下一轮 rolling prompt 注入短控制指令，要求不要再输出 plan，并继续输出一个 `<reasoning>` 后接 `<tool_call>` 或 `<answer>`。
+- 下一轮 rolling prompt 注入短控制指令，要求不要再输出 plan，并继续输出一个 `<think>` 后接 `<search>` 或 `<answer>`。
 
-工程上还有一个细节：plan-only follow-up instruction 是控制文本，不是 `<tool_response>`。因此它可以进入 rolling prompt 帮助模型继续生成，但在最终用于 reward parsing 的 serialized trajectory 中会被 mask/pad 掉，避免污染 reward parser。
+工程上还有一个细节：plan-only follow-up instruction 是控制文本，不是 `<information>`。因此它可以进入 rolling prompt 帮助模型继续生成，但在最终用于 reward parsing 的 serialized trajectory 中会被 mask/pad 掉，避免污染 reward parser。
 
 ### 2.5 Invalid action feedback、action_reason_stats 和 debug samples
 
 Search-P1 不只是把非法 action 判掉，还给了更细粒度的原因分类。`search_p1/llm_agent/generation.py` 中当前稳定 reason buckets 包括：
 
 - valid：`valid_search`、`valid_answer`、`valid_plan`、`inactive`
-- invalid：`missing_plan`、`duplicate_plan`、`missing_or_invalid_plan_steps`、`action_before_plan`、`missing_reasoning`、`invalid_tool_call`、`missing_action_tag`、`empty_prediction`、`malformed_action_tag`、`unknown_invalid`
+- invalid：`missing_plan`、`duplicate_plan`、`missing_or_invalid_plan_steps`、`action_before_plan`、`missing_think`、`invalid_search`、`missing_action_tag`、`empty_prediction`、`malformed_action_tag`、`unknown_invalid`
 
 这些 reason 会被聚合到 `DataProto.meta_info["action_reason_stats"]`，再由 `verl/trainer/ppo/ray_trainer.py` 输出成训练或验证指标，例如 `val/env/action_reason/...`。这对排查训练早期非常有用：如果模型经常失败，不再只能看到 reward 低，而是能知道失败集中在缺 plan、重复 plan、旧标签、缺 reasoning，还是 query 不合法。
 
@@ -207,7 +207,7 @@ SEARCH_P1_ROLLOUT_DEBUG_SAMPLES=N
 
 - `is_valid_sequence` 用状态机校验完整结构。
 - `extract_plan_steps` 从 `<plan>` 中提取 numbered search steps。
-- `extract_tool_calls` 提取模型 `<tool_call>`，并显式移除 `<tool_response>` 内容。
+- `extract_search_calls` 提取模型 `<search>`，并显式移除 `<information>` 内容。
 - `count_actions` 返回可计数 tool call 数量。
 - `validate_planner_block` 校验单个前置 plan、合法 step、连续编号。
 - `is_valid_search_query` 拒绝空 query、嵌套标签、URL-like query 和超长 query。
@@ -241,7 +241,7 @@ S_self = r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
 
 - `r_planner`：planner 有效性门控。缺失、重复、非前置、无 numbered search step 时为 0。
 - `n_plan`：planner 中声明的 search step 数。
-- `n_actions`：模型实际发出的 `<tool_call>` 数。
+- `n_actions`：模型实际发出的 `<search>` 数。
 - `n_exec_self`：实际 tool call 覆盖了多少 planner step。
 
 两个比例分别度量：
@@ -355,7 +355,7 @@ P1 数据入口在 `scripts/nq_hotpotqa_p1/README.md` 中说明：
 
 - train：从 `nq,hotpotqa` 合并生成 `data/nq_hotpotqa_p1/train.parquet`。
 - test：从 `nq,triviaqa,popqa,hotpotqa,2wikimultihopqa,musique,bamboogle` 合并生成 `data/nq_hotpotqa_p1/test.parquet`。
-- 数据处理脚本在 prompt 中注入 Search-P1 标签规范，要求先输出完整 `<plan>`，再进行 `<reasoning>` 和 `<tool_call>`。
+- 数据处理脚本在 prompt 中注入 Search-P1 标签规范，要求先输出完整 `<plan>`，再进行 `<think>` 和 `<search>`。
 
 数据样本保留 QA reward 所需字段，例如 `data_source`、`prompt`、`ability`、`reward_model.ground_truth` 和 `extra_info`。
 
@@ -364,13 +364,13 @@ P1 数据入口在 `scripts/nq_hotpotqa_p1/README.md` 中说明：
 训练和验证中的搜索 rollout 由 `search_p1/llm_agent/generation.py` 管理：
 
 1. 根据当前 rolling prompt 调用 actor rollout worker 生成 response。
-2. `_truncate_at_first_action` 在第一个 `</tool_call>` 或 `</answer>` 处截断，避免单轮生成多个 action。
+2. `_truncate_at_first_action` 在第一个 `</search>` 或 `</answer>` 处截断，避免单轮生成多个 action。
 3. `postprocess_predictions` 解析 action：
-   - `<tool_call>` -> internal `search`
+   - `<search>` -> internal `search`
    - `<answer>` -> terminal answer
    - legal plan-only -> `plan`
    - 其他 -> invalid reason
-4. `execute_predictions` 根据 action 调 retriever、注入 `<tool_response>`、返回 valid/done/search 标记。
+4. `execute_predictions` 根据 action 调 retriever、注入 `<information>`、返回 valid/done/search 标记。
 5. `planner_seen` 更新 plan-once 状态。
 6. 控制 observation 被用于 rolling prompt，但从最终 reward trajectory 中 mask 掉。
 
@@ -423,7 +423,7 @@ P1 脚本使用 `verl.trainer.main_ppo_format`，其中 `RewardManager`：
 - Search-P1 训练轨迹结构文档：`docs/trajectory_structure_design.md`。
 - Track A self-consistency 设计文档：`docs/track_a_self_consistency_plan.md`。
 - P1 专用训练脚本和 README：`scripts/nq_hotpotqa_p1/`。
-- rollout tag 迁移：`<tool_call>/<tool_response>/<reasoning>`。
+- rollout tag 迁移：`<search>/<information>/<think>`。
 - `planner_seen`、plan-only 第一阶段、final step 禁止 plan-only。
 - invalid action feedback 和 `action_reason_stats`。
 - opt-in rollout debug samples。
@@ -475,7 +475,7 @@ python -m pytest tests/test_generation_control_observations.py
 可以写成工程成果，不夸大实验效果：
 
 - 基于 Search-R1/veRL 构建 Search-P1 搜索增强 RL 训练流程，将原 reasoning-search 轨迹升级为 front-loaded planner + tool-call 结构，统一 rollout、reward parser 与 trainer metric 的标签合约。
-- 设计并实现 Search-P1 轨迹解析与校验机制，引入 `<plan>/<reasoning>/<tool_call>/<tool_response>/<answer>` 状态机、plan-once 约束、plan-only 首阶段和非法 action 原因统计，提升训练行为可观测性。
+- 设计并实现 Search-P1 轨迹解析与校验机制，引入 `<plan>/<think>/<search>/<information>/<answer>` 状态机、plan-once 约束、plan-only 首阶段和非法 action 原因统计，提升训练行为可观测性。
 - 设计 Track A Self-Consistency 路径质量指标，基于 planner steps 与实际 tool calls 计算 `S_self`，以旁路 reward component 方式记录，不改变现有 scalar reward，降低早期 reward shaping 风险。
 - 打通 reward-time trajectory dump、trainer 指标聚合和离线分析脚本，支持对 planner 合法率、计划覆盖率、搜索冗余和低分失败原因进行样本级分析。
 - 规划 Track B reference alignment 与双轨路径奖励聚合方案，将模型自声明计划执行度和外部 reference step 覆盖度解耦，为后续 path reward 接入和消融实验打基础。
@@ -490,9 +490,9 @@ python -m pytest tests/test_generation_control_observations.py
 
 没有 planner 时，只能看到模型实际搜了什么，很难判断路径质量。加 planner 后，模型先声明搜索策略，再执行 query，我们就能比较“计划”和“行动”是否一致。这样可以区分几类问题：模型计划无效、计划合理但没执行、执行过度搜索、或者 action 和 plan 匹配不上。
 
-### Q3：为什么要从 `<think>/<search>/<information>` 迁移到 `<reasoning>/<tool_call>/<tool_response>`？
+### Q3：为什么要从 `<think>/<search>/<information>` 迁移到 `<think>/<search>/<information>`？
 
-这不是单纯改名。新标签把模型动作和环境响应边界讲清楚：`<tool_call>` 是模型输出的可执行动作，`<tool_response>` 是环境注入的 observation。reward parser 会移除 `<tool_response>` 再提取 `<tool_call>`，避免把检索结果里的文本误判为模型 action。这个边界对训练稳定性很重要。
+这不是单纯改名。新标签把模型动作和环境响应边界讲清楚：`<search>` 是模型输出的可执行动作，`<information>` 是环境注入的 observation。reward parser 会移除 `<information>` 再提取 `<search>`，避免把检索结果里的文本误判为模型 action。这个边界对训练稳定性很重要。
 
 ### Q4：plan-only 第一阶段解决什么问题？
 
@@ -521,7 +521,7 @@ Track A 的参照物是模型自己的 planner，回答“有没有按自己说�
 3. Track B reference 生成：定义 `reference_steps` 数据格式，探索强模型生成、多候选拒绝采样和 LLM voting，确保 reference steps 可执行、必要、不过长。
 4. 双轨 reward 接入：保持 `S_self` 和 `S_ref` 解耦，新增聚合层 `R_path=max(S_self,S_ref)`，再设计 `final_score = existing_score + weight * R_path` 的接入策略。
 5. 消融实验：比较无 planner、planner-only、Track A 旁路、Track A reward、Track A + Track B、不同 matcher、不同 path weight 对答案 EM、搜索次数、格式合法率和路径指标的影响。
-6. no-search shortcut 防护：补齐或核对 `require_search_for_format`，确保错误答案且没有 `<tool_call>` 的轨迹不能通过结构格式分获益。
+6. no-search shortcut 防护：补齐或核对 `require_search_for_format`，确保错误答案且没有 `<search>` 的轨迹不能通过结构格式分获益。
 7. inference 口径收敛：如果要对外 demo Search-P1，需要把 `infer.py` 等残留旧标签示例迁移到新标签，保证训练和推理口径一致。
 
 ## 8. 简短总结

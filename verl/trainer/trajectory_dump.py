@@ -35,6 +35,10 @@ def _append_trajectory_dump(
     split,
     index=None,
     track_a=None,
+    track_b=None,
+    prompt=None,
+    extra_info=None,
+    reward_components=None,
 ):
     path = Path(trajectory_dump_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,6 +53,14 @@ def _append_trajectory_dump(
         row["index"] = index
     if track_a is not None:
         row["track_a"] = track_a
+    if track_b is not None:
+        row["track_b"] = track_b
+    if prompt is not None:
+        row["prompt"] = prompt
+    if extra_info is not None:
+        row["extra_info"] = extra_info
+    if reward_components is not None:
+        row["reward_components"] = reward_components
 
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(_json_safe(row), ensure_ascii=False) + "\n")

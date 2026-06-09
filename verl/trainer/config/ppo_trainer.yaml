@@ -149,6 +149,7 @@ reward_model:
   path_match_strategy: lexical
   require_search_for_format: false
   max_plan_steps: null
+  max_reference_steps: null
   self_consistency_weight: 0.0
   trajectory_dump_path: null
   trajectory_dump_limit: 0
@@ -167,8 +168,8 @@ algorithm:
     type: fixed
     kl_coef: 0.001
   state_masking:
-    start_state_marker: "<tool_response>"
-    end_state_marker: "</tool_response>"
+    start_state_marker: "<information>"
+    end_state_marker: "</information>"
 
 trainer:
   total_epochs: 30

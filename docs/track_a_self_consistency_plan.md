@@ -2,7 +2,7 @@
 
 ## 设计动机
 
-Search-P1 的 planner 只有在训练中能被度量时才有意义。模型先写 `<plan>`，再执行 `<tool_call>`，这件事本身提供了一个很直接的自监督信号：模型有没有按自己声明的搜索计划行动。
+Search-P1 的 planner 只有在训练中能被度量时才有意义。模型先写 `<plan>`，再执行 `<search>`，这件事本身提供了一个很直接的自监督信号：模型有没有按自己声明的搜索计划行动。
 
 Track A 只回答这个问题：
 
@@ -31,8 +31,8 @@ S_self = r_planner * (n_exec_self / n_plan) * (n_exec_self / n_actions)
 
 - `r_planner`：planner 有效性门控。planner 缺失、重复、位置错误，没有 numbered `Step N: Search ...`，或超过启用的 `max_plan_steps` 上限时为 `0`。
 - `n_plan`：planner 中声明的搜索步骤数。
-- `n_actions`：模型实际发出的 `<tool_call>` 数量。
-- `n_exec_self`：实际 `<tool_call>` 覆盖了多少 planner step。
+- `n_actions`：模型实际发出的 `<search>` 数量。
+- `n_exec_self`：实际 `<search>` 覆盖了多少 planner step。
 
 这个公式有两个乘法比例：
 
@@ -52,7 +52,7 @@ Track A 的参照物是模型自己的 planner。Track B 的参照物是外部 `
 Track A 应只依赖：
 
 - assistant 轨迹中的 `<plan>`。
-- assistant 轨迹中的 `<tool_call>`。
+- assistant 轨迹中的 `<search>`。
 - planner step 与 action 的匹配规则。
 
 Track A 不应依赖：
@@ -144,18 +144,18 @@ Step 2: Search ...
 </plan>
 ```
 
-这里的 planner step 是 search intent，不是 exact query list。每个 step 表示一个可执行搜索目标，后续 `<tool_call>` 可以把中间检索结果实例化为具体 plain query。对于依赖未知中间结果的多跳问题，planner 可以写 `[identified actor]`、`[identified film]`、`[target entity]` 这类 placeholder；不应写 fallback branches、year-by-year searches、episode-by-episode searches 或长枚举式 exhaustive lists。
+这里的 planner step 是 search intent，不是 exact query list。每个 step 表示一个可执行搜索目标，后续 `<search>` 可以把中间检索结果实例化为具体 plain query。对于依赖未知中间结果的多跳问题，planner 可以写 `[identified actor]`、`[identified film]`、`[target entity]` 这类 placeholder；不应写 fallback branches、year-by-year searches、episode-by-episode searches 或长枚举式 exhaustive lists。
 
 Action 是模型实际执行的搜索：
 
 ```text
-<tool_call>...</tool_call>
+<search>...</search>
 ```
 
 Track A 的关键设计点是把两者放在同一个语义空间里比较：
 
 ```text
-planner step  <->  tool_call query
+planner step  <->  search query
 ```
 
 第一版不追求完美语义匹配，而是追求可解释、可复现、容易测试。基础策略使用 deterministic lexical matching：
@@ -238,7 +238,7 @@ serialized trajectory
 
 ```python
 extract_plan_steps(solution_str) -> list[str]
-extract_tool_calls(solution_str) -> list[str]
+extract_search_calls(solution_str) -> list[str]
 validate_planner_steps(steps) -> bool
 validate_planner_block(solution_str, steps=None, max_plan_steps=None) -> bool
 ```
@@ -258,7 +258,7 @@ compute_self_consistency_score(solution_str, match_strategy="lexical", max_plan_
 
 边界要求：
 
-- `<tool_response>` 中的文本不能被计为 action。
+- `<information>` 中的文本不能被计为 action。
 - planner 必须是单个、前置 block；重复 planner 或非前置 planner 应使 `r_planner = 0`。
 - planner 的非空行都必须是 `Step N: Search ...`，并且编号应从 `1` 开始连续递增。
 - planner step 中嵌套标签应视为 planner 无效。
@@ -298,11 +298,11 @@ Track A 设计是否成立，可以用以下问题验收：
 
 - 没有 `reference_steps` 的样本是否仍能计算 `S_self`？
 - 缺失或非法 planner 是否稳定得到 `S_self = 0.0`？
-- 没有 `<tool_call>` 的轨迹是否稳定得到 `S_self = 0.0`？
+- 没有 `<search>` 的轨迹是否稳定得到 `S_self = 0.0`？
 - 完全执行 planner 且没有冗余 action 时是否得到 `S_self = 1.0`？
 - 冗余 action 是否会降低分数？
 - 重复 action 是否不会虚增 `n_exec_self`？
-- `<tool_response>` 是否绝不会被当作 action？
+- `<information>` 是否绝不会被当作 action？
 - 记录指标是否只表达 self-consistency，而不是 bonus？
 - 开启 Track A 记录前后，scalar reward 是否完全一致？
 
@@ -367,7 +367,7 @@ self_n_exec / self_n_actions
 | 类别 | 含义 | 可能动作 |
 | --- | --- | --- |
 | `invalid_planner` | planner 缺失、重复、非前置或没有 numbered search step | 优先看 prompt/rollout 约束 |
-| `no_actions` | 没有 `<tool_call>` | 检查 no-search shortcut |
+| `no_actions` | 没有 `<search>` | 检查 no-search shortcut |
 | `unmatched_actions` | 有搜索，但和 planner steps 匹配不上 | 看 matcher 或 planner 表达 |
 | `redundant_actions` | 覆盖 planner 后仍有多余搜索 | 看模型是否过度搜索 |
 | `overabstract_plan` | planner 太抽象，难以和 query 对齐 | 调整 planner prompt |
@@ -383,7 +383,7 @@ self_n_exec / self_n_actions
 - 保持 `final_score = existing_score`。
 - 保持无 `path_bonus`。
 - 保持 Track A 不读取 `reference_steps`。
-- 保证 `<tool_response>` 内伪 `<tool_call>` 不计入 action。
+- 保证 `<information>` 内伪 `<search>` 不计入 action。
 - 保证重复/非前置 planner 时 `S_self = 0`。
 - 保证 planner 中混入非 `Step N: Search ...` 行或编号不连续时 `S_self = 0`。
 
@@ -399,7 +399,7 @@ self_n_exec / self_n_actions
 - 缺 planner、重复 planner、非前置 planner 均为 `0`。
 - planner 混入非法行或编号不连续时为 `0`。
 - planner 超过 `max_plan_steps=4` 时为 `0`，并且在 `require_search_for_format=true` 下错误答案不能拿结构格式分。
-- `<tool_response>` 中的伪 `<tool_call>` 不计数。
+- `<information>` 中的伪 `<search>` 不计数。
 - `compute_score_em` 返回值不受 `S_self` 影响。
 
 验收标准：以后改 parser、matcher、logger 时不会悄悄改变 Track A 口径。

@@ -71,8 +71,8 @@ def make_clean_query(question: str, max_words: int):
     return query
 
 
-def build_tool_response(answer: str):
-    return f"<tool_response>Doc 1(Title: Answer evidence) The answer is {answer}.</tool_response>"
+def build_information(answer: str):
+    return f"<information>Doc 1(Title: Answer evidence) The answer is {answer}.</information>"
 
 
 def build_first_assistant(query: str):
@@ -80,14 +80,14 @@ def build_first_assistant(query: str):
         "<plan>\n"
         f"Step 1: Search {query}\n"
         "</plan>\n"
-        "<reasoning>I need external evidence for the question.</reasoning>\n"
-        f"<tool_call>{query}</tool_call>"
+        "<think>I need external evidence for the question.</think>\n"
+        f"<search>{query}</search>"
     )
 
 
 def build_final_assistant(answer: str):
     return (
-        "<reasoning>The evidence is sufficient to answer the question.</reasoning>\n"
+        "<think>The evidence is sufficient to answer the question.</think>\n"
         f"<answer>{answer}</answer>"
     )
 
@@ -95,7 +95,7 @@ def build_final_assistant(answer: str):
 def build_single_assistant(query: str, answer: str):
     return (
         f"{build_first_assistant(query)}\n"
-        f"{build_tool_response(answer)}\n"
+        f"{build_information(answer)}\n"
         f"{build_final_assistant(answer)}"
     )
 
@@ -131,7 +131,7 @@ def build_record(row: dict, max_query_words: int, conversation_format: str):
         messages = [
             {"role": "user", "content": prompt_content},
             {"role": "assistant", "content": build_first_assistant(query)},
-            {"role": "user", "content": build_tool_response(answer)},
+            {"role": "user", "content": build_information(answer)},
             {"role": "assistant", "content": build_final_assistant(answer)},
         ]
 
@@ -172,7 +172,7 @@ def parse_args():
         "--conversation-format",
         choices=("multi_turn", "single_assistant"),
         default="multi_turn",
-        help="multi_turn keeps tool_response outside assistant messages; single_assistant writes a full trajectory.",
+        help="multi_turn keeps information outside assistant messages; single_assistant writes a full trajectory.",
     )
     parser.add_argument(
         "--output-format",
