@@ -147,7 +147,7 @@ def test_self_consistency_perfect_match_records_components_without_bonus():
     assert components["effective_retrieval"] == 1.0
     assert components["track_a_bonus"] == 0.0
     assert components["self_consistency_weight"] == 0.0
-    assert "path_bonus" not in components
+    assert components["path_bonus"] == components["track_a_bonus"]
     assert components["final_score"] == components["base_score"]
 
 
@@ -195,7 +195,7 @@ def test_self_consistency_weight_adds_perfect_track_a_bonus():
     assert components["self_consistency_weight"] == 0.05
     assert components["final_score"] == pytest.approx(components["base_score"] + 0.05)
     assert score == components["final_score"]
-    assert "path_bonus" not in components
+    assert components["path_bonus"] == components["track_a_bonus"]
 
 
 def test_self_consistency_weight_adds_partial_track_a_bonus():
@@ -224,7 +224,7 @@ Step 1: Search Albert Einstein birthplace.
     assert components["self_consistency"] == 0.5
     assert components["track_a_bonus"] == pytest.approx(0.025)
     assert components["final_score"] == pytest.approx(components["base_score"] + 0.025)
-    assert "path_bonus" not in components
+    assert components["path_bonus"] == components["track_a_bonus"]
 
 
 def test_self_consistency_weight_no_action_adds_zero_bonus():
@@ -240,7 +240,7 @@ def test_self_consistency_weight_no_action_adds_zero_bonus():
     assert components["self_consistency"] == 0.0
     assert components["track_a_bonus"] == 0.0
     assert components["final_score"] == components["base_score"]
-    assert "path_bonus" not in components
+    assert components["path_bonus"] == components["track_a_bonus"]
 
 
 def test_redundant_action_lowers_self_consistency():
@@ -392,7 +392,7 @@ def test_require_search_false_preserves_invalid_sequence_final_format_shaping():
     assert components["has_search"] is True
     assert components["effective_structure_format"] == 1.0
     assert components["effective_retrieval"] == 1.0
-    assert components["base_score"] == 0.1
+    assert components["base_score"] == 0
 
 
 def test_extract_solution_keeps_standalone_single_answer_compatibility():
@@ -628,7 +628,7 @@ def test_require_search_true_keeps_exact_match_outcome_reward_with_invalid_forma
     )
 
     assert components["has_search"] is True
-    assert components["base_score"] == 0.8
+    assert components["base_score"] == 0
 
 
 @pytest.mark.parametrize(

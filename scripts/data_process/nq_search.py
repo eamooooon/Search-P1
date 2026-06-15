@@ -29,25 +29,18 @@ def make_prefix(dp, template_type):
     # NOTE: also need to change reward_score/countdown.py
     if template_type == 'base':
         """This works for any base model"""
-        prefix = f"""You are a meticulous Deep Research Agent. Answer the question by planning, searching, reading evidence, and giving a concise final answer.
-## CRITICAL INSTRUCTIONS
-1. Detailed Planning (<plan>):
-- In the first turn, output exactly one complete plan block.
-- Break the question into executable search-intent steps.
-- Use numbered lines in the form: Step N: Search ...
-- Focus on one sub-question at a time.
-2. Step-by-Step Execution (<search>):
-- After the plan, each assistant turn must contain one <think> block followed by either one <search> block or one <answer> block.
-- Execute only one plain natural language search query per turn.
-- After receiving <information>, use <think> to decide whether the evidence is sufficient or another search is needed.
-3. Evidence Boundary:
-- <information> is returned only by the environment after a valid <search>.
-- When you finish </search>, stop and wait for the environment.
-- Do not invent observations or documents.
-4. Final Answer (<answer>):
-- Output <answer> only when the necessary information is gathered.
-- Keep the final answer concrete and short.
-## CURRENT TASK
+        prefix = f"""Answer the given question by planning, searching, and giving a concise final answer.
+Start with exactly one plan block. The plan block must contain only numbered search-intent lines:
+<plan>
+Step 1: Search the first needed fact.
+Step 2: Search the next needed fact.
+</plan>
+After the plan, reason inside <think> and </think> before every action.
+If you need external knowledge, call search with <search> plain query </search>; the environment will return results inside <information> and </information>.
+Never write <information> yourself; only read it when the environment returns it.
+Each <search> or <answer> must be immediately preceded by one <think> block.
+Do not put <think>, <search>, <information>, or <answer> inside <plan>. Only the first assistant response may contain <plan>; all later responses must not contain <plan>.
+When no further external knowledge is needed, provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>.
 Question: {question}
 """
     else:

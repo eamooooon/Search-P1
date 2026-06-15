@@ -21,6 +21,16 @@ def extract_final_answer(text):
 
 
 def is_correct_trajectory(row):
+    collection = row.get("collection")
+    if isinstance(collection, dict) and "accepted_success" in collection:
+        return bool(collection["accepted_success"])
+
+    reward_components = row.get("reward_components")
+    if isinstance(reward_components, dict) and "base_score" in reward_components:
+        if float(reward_components.get("duplicate_plan", 0.0) or 0.0) != 0.0:
+            return False
+        return float(reward_components.get("base_score", 0.0) or 0.0) >= 1.0
+
     text = solution_str(row)
     if not text:
         return False
@@ -28,13 +38,18 @@ def is_correct_trajectory(row):
     targets = ground_truth.get("target")
     if not targets:
         return False
-    answer = extract_final_answer(text)
+    answer = row.get("final_answer")
+    if answer is None:
+        answer = extract_final_answer(text)
     if answer is None:
         return False
     return bool(qa_em_format.em_check(answer, targets))
 
 
 def valid_actions(row):
+    actions = row.get("search_calls")
+    if isinstance(actions, list):
+        return [action for action in actions if qa_em_format.is_valid_search_query(action)]
     actions = qa_em_format.extract_search_calls(solution_str(row))
     return [action for action in actions if qa_em_format.is_valid_search_query(action)]
 
@@ -58,6 +73,8 @@ def collect_successful_groups(path, max_successful_per_question=None):
             "correct": 0,
             "trajectories": [],
         })
+        if "ground_truth" not in group["metadata"]:
+            group["metadata"]["ground_truth"] = row_ground_truth(row)
         group["total"] += 1
 
         if not is_correct_trajectory(row):

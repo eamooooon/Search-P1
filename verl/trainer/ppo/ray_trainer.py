@@ -184,6 +184,9 @@ REWARD_COMPONENT_KEYS = (
     "effective_retrieval",
     "track_a_bonus",
     "self_consistency_weight",
+    "track_b_bonus",
+    "reference_alignment_weight",
+    "path_bonus",
     "self_consistency",
     "self_r_planner",
     "self_n_plan",
@@ -363,6 +366,49 @@ def compute_data_metrics(batch, use_critic=True):
     metrics.update(_compute_action_reason_metrics(batch.meta_info))
 
     return metrics
+
+
+def compute_rollout_only_metrics(batch, reward_tensor):
+    sequence_score = reward_tensor.sum(-1)
+    metrics = {
+        'critic/score/mean': torch.mean(sequence_score).detach().item(),
+        'critic/score/max': torch.max(sequence_score).detach().item(),
+        'critic/score/min': torch.min(sequence_score).detach().item(),
+    }
+
+    if 'turns_stats' in batch.meta_info:
+        metrics['env/number_of_actions/mean'] = float(np.array(batch.meta_info['turns_stats'], dtype=np.int16).mean())
+        metrics['env/number_of_actions/max'] = float(np.array(batch.meta_info['turns_stats'], dtype=np.int16).max())
+        metrics['env/number_of_actions/min'] = float(np.array(batch.meta_info['turns_stats'], dtype=np.int16).min())
+    if 'active_mask' in batch.meta_info:
+        metrics['env/finish_ratio'] = 1 - float(np.array(batch.meta_info['active_mask'], dtype=np.int16).mean())
+    if 'valid_action_stats' in batch.meta_info:
+        metrics['env/number_of_valid_action'] = float(np.array(batch.meta_info['valid_action_stats'], dtype=np.int16).mean())
+        metrics['env/ratio_of_valid_action'] = float((np.array(batch.meta_info['valid_action_stats'], dtype=np.int16) / np.array(batch.meta_info['turns_stats'], dtype=np.int16)).mean())
+    if 'valid_search_stats' in batch.meta_info:
+        metrics['env/number_of_valid_search'] = float(np.array(batch.meta_info['valid_search_stats'], dtype=np.int16).mean())
+
+    metrics.update(_compute_reward_component_metrics(batch.meta_info))
+    metrics.update(_compute_action_reason_metrics(batch.meta_info))
+    return metrics
+
+
+def print_rollout_only_timing(step, batch, timing_raw, metrics):
+    traj_num = max(len(batch), 1)
+    step_s = float(timing_raw.get('step', 0.0))
+    gen_s = float(timing_raw.get('gen', 0.0))
+    reward_s = float(timing_raw.get('reward', 0.0))
+    total_s = step_s + reward_s
+    sec_per_traj = total_s / traj_num
+    traj_per_sec = traj_num / total_s if total_s > 0 else 0.0
+    finish_ratio = metrics.get('env/finish_ratio')
+    finish_text = f", finish={finish_ratio:.2%}" if finish_ratio is not None else ""
+    print(
+        f"ROLLOUT_ONLY_TIMING step={step} traj={traj_num} "
+        f"total={total_s:.2f}s gen={gen_s:.2f}s reward={reward_s:.2f}s "
+        f"sec/traj={sec_per_traj:.4f} traj/s={traj_per_sec:.2f}{finish_text}",
+        flush=True,
+    )
 
 
 def compute_timing_metrics(batch, timing_raw):
@@ -940,6 +986,7 @@ class RayPPOTrainer(object):
             pprint(f'Initial validation metrics: {val_metrics}')
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
+                logger.finish()
                 return
 
         # we start from step 1
@@ -947,6 +994,7 @@ class RayPPOTrainer(object):
             self.global_steps += 1
         elif self.global_steps > self.total_training_steps:
             print(f'Resume step {self.global_steps} exceeds total training steps {self.total_training_steps}, skip training.')
+            logger.finish()
             return
 
         # Agent config preparation
@@ -967,6 +1015,7 @@ class RayPPOTrainer(object):
             actor_rollout_wg=self.actor_rollout_wg,
             config=gen_config,
         )
+        rollout_only = self.config.trainer.get('rollout_only', False)
 
         # start training loop
         for epoch in range(start_epoch, self.config.trainer.total_epochs):
@@ -1017,9 +1066,10 @@ class RayPPOTrainer(object):
                         for key in final_gen_batch_output.batch.keys():
                             final_gen_batch_output.batch[key] = final_gen_batch_output.batch[key].long()
 
-                        with torch.no_grad():
-                            output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
-                            final_gen_batch_output = final_gen_batch_output.union(output)
+                        if not rollout_only:
+                            with torch.no_grad():
+                                output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
+                                final_gen_batch_output = final_gen_batch_output.union(output)
 
                         # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                         #                                         dtype=object)
@@ -1028,6 +1078,20 @@ class RayPPOTrainer(object):
                         # repeat to align with repeated responses in rollout
                         batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                         batch = batch.union(final_gen_batch_output)
+
+                    if rollout_only:
+                        with _timer('reward', timing_raw):
+                            reward_tensor = self.reward_fn(batch)
+                            batch.batch['token_level_scores'] = reward_tensor
+                        metrics.update(compute_rollout_only_metrics(batch, reward_tensor))
+                        metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                        print_rollout_only_timing(self.global_steps, batch, timing_raw, metrics)
+                        logger.log(data=metrics, step=self.global_steps)
+                        self.global_steps += 1
+                        if self.global_steps >= self.total_training_steps:
+                            logger.finish()
+                            return
+                        continue
 
                     ####################
                     ####################
@@ -1132,7 +1196,10 @@ class RayPPOTrainer(object):
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
                     self._save_checkpoint(epoch=epoch, batch_idx=batch_idx, steps_in_epoch=steps_in_epoch)
+                    logger.finish()
                     return
+
+        logger.finish()
     
     def _create_loss_mask(self, batch, metrics):
         """Create loss mask for state tokens."""

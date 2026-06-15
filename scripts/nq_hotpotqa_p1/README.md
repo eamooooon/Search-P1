@@ -29,50 +29,12 @@ Each JSONL row can be keyed by `data_source + split + index`, or by `question`:
 {"question": "Who discovered radium?", "reference_steps": ["Search who discovered radium."]}
 ```
 
-After generating parquet, verify the coverage before training:
-
-```bash
-bash scripts/nq_hotpotqa_p1/check_reference_steps.sh
-```
-
 ## Build Track B Reference Plans
 
-Track B reference plans come from offline trajectory JSONL, not from reward-time
-LLM calls.
-
-First produce trajectories with a smoke run:
-
-```bash
-TRAJECTORY_DUMP_PATH=logs/my-trajectories.jsonl \
-TRAJECTORY_DUMP_LIMIT=512 \
-bash scripts/nq_hotpotqa_p1/train_grpo.sh
-```
-
-Then build reference plans:
-
-```bash
-TRAJECTORY_JSONL=logs/my-trajectories.jsonl \
-bash scripts/nq_hotpotqa_p1/build_reference_steps.sh
-```
-
-That writes:
-
-```text
-data/nq_hotpotqa_p1/reference_steps.jsonl
-data/nq_hotpotqa_p1/reference_vote_requests.jsonl
-```
-
-For OpenAI-compatible voting, configure `.env.llm` or `.env`, then run:
-
-```bash
-bash scripts/nq_hotpotqa_p1/run_reference_llm_voting.sh
-```
-
-To check a single voting request:
-
-```bash
-bash scripts/nq_hotpotqa_p1/test_reference_llm_connection.sh
-```
+Track B reference plans come from offline rollout JSONL, not from reward-time
+LLM calls. The standalone two-stage reference-building scripts were removed;
+generate a JSONL file with `reference_steps` using the active
+`search_p1/analysis` pipeline, then pass it into data processing.
 
 Then regenerate parquet:
 

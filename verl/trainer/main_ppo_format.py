@@ -23,8 +23,53 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
 import logging
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_question_text(text):
+    if not isinstance(text, str):
+        return None
+    text = " ".join(text.strip().split())
+    return text or None
+
+
+def _extract_question_from_text(text):
+    if not isinstance(text, str):
+        return None
+    matches = list(re.finditer(r"Question:\s*", text))
+    if not matches:
+        return None
+    tail = text[matches[-1].end():]
+    stop_candidates = [
+        pos for pos in (
+            tail.find("<|im_end|>"),
+            tail.find("<|im_start|>assistant"),
+            tail.find("<plan>"),
+            tail.find("<think>"),
+            tail.find("<search>"),
+            tail.find("<answer>"),
+        )
+        if pos != -1
+    ]
+    if stop_candidates:
+        tail = tail[:min(stop_candidates)]
+    return _normalize_question_text(tail)
+
+
+def _extract_question(prompt, solution_str):
+    if isinstance(prompt, list):
+        for message in reversed(prompt):
+            if isinstance(message, dict):
+                question = _extract_question_from_text(message.get("content", ""))
+                if question:
+                    return question
+    elif isinstance(prompt, str):
+        question = _extract_question_from_text(prompt)
+        if question:
+            return question
+    return _extract_question_from_text(solution_str)
 
 def _select_rm_score_fn(data_source):
     if data_source in ['nq', 'triviaqa', 'popqa', 'web_questions', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle', 'strategyqa']:
@@ -49,8 +94,10 @@ class RewardManager():
                  max_plan_steps=None,
                  max_reference_steps=None,
                  self_consistency_weight=0.0,
+                 reference_alignment_weight=0.0,
                  trajectory_dump_path=None,
                  trajectory_dump_limit=0,
+                 trajectory_dump_full_solution=True,
                  trajectory_dump_split=None) -> None:
         qa_em_format.validate_path_match_strategy(path_match_strategy)
         self.tokenizer = tokenizer
@@ -64,10 +111,13 @@ class RewardManager():
         self.max_plan_steps = max_plan_steps
         self.max_reference_steps = max_reference_steps
         self.self_consistency_weight = self_consistency_weight
+        self.reference_alignment_weight = reference_alignment_weight
         self.trajectory_dump_path = trajectory_dump_path
         self.trajectory_dump_limit = int(trajectory_dump_limit or 0)
+        self.trajectory_dump_full_solution = trajectory_dump_full_solution
         self.trajectory_dump_split = trajectory_dump_split
         self._trajectory_dump_count = 0
+        self._trajectory_key_counts = defaultdict(int)
 
     def _should_dump_trajectory(self):
         if not self.trajectory_dump_path:
@@ -76,7 +126,7 @@ class RewardManager():
             return False
         return self.trajectory_dump_limit < 0 or self._trajectory_dump_count < self.trajectory_dump_limit
 
-    def _dump_trajectory(self, *, solution_str, ground_truth, data_source, components, prompt=None, extra_info=None):
+    def _dump_trajectory(self, *, solution_str, response_str, ground_truth, data_source, components, prompt=None, extra_info=None):
         if not self._should_dump_trajectory():
             return
         dump_split = self.trajectory_dump_split
@@ -84,6 +134,14 @@ class RewardManager():
         if isinstance(extra_info, dict):
             dump_split = extra_info.get("split", dump_split)
             dump_index = extra_info.get("index", dump_index)
+        trajectory_key = (str(data_source), str(dump_split), str(dump_index))
+        rollout_index = self._trajectory_key_counts[trajectory_key]
+        self._trajectory_key_counts[trajectory_key] += 1
+
+        question = _extract_question(prompt, solution_str)
+        plan_steps = qa_em_format.extract_plan_steps(solution_str)
+        search_calls = qa_em_format.extract_search_calls(solution_str)
+        final_answer = qa_em_format.extract_solution(solution_str)
         track_a_components = {
             key: components[key]
             for key in (
@@ -101,6 +159,8 @@ class RewardManager():
             key: components[key]
             for key in (
                 "reference_alignment",
+                "reference_alignment_weight",
+                "track_b_bonus",
                 "ref_available",
                 "ref_n_steps",
                 "ref_n_actions",
@@ -110,11 +170,18 @@ class RewardManager():
         }
         _append_trajectory_dump(
             self.trajectory_dump_path,
-            solution_str=solution_str,
+            solution_str=solution_str if self.trajectory_dump_full_solution else response_str,
             ground_truth=ground_truth,
             data_source=data_source,
             split=dump_split,
             index=dump_index,
+            question=question,
+            trajectory=response_str,
+            trajectory_index=self._trajectory_dump_count,
+            rollout_index=rollout_index,
+            plan_steps=plan_steps,
+            search_calls=search_calls,
+            final_answer=final_answer,
             track_a=track_a_components,
             track_b=track_b_components,
             prompt=prompt,
@@ -132,25 +199,7 @@ class RewardManager():
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
 
-        reward_components = {
-            "base_score": [],
-            "has_search": [],
-            "effective_structure_format": [],
-            "effective_retrieval": [],
-            "track_a_bonus": [],
-            "self_consistency_weight": [],
-            "self_consistency": [],
-            "self_r_planner": [],
-            "self_n_plan": [],
-            "self_n_actions": [],
-            "self_n_exec": [],
-            "reference_alignment": [],
-            "ref_available": [],
-            "ref_n_steps": [],
-            "ref_n_actions": [],
-            "ref_n_covered": [],
-            "final_score": [],
-        }
+        reward_components = defaultdict(list)
 
         already_print_data_sources = {}
 
@@ -171,6 +220,7 @@ class RewardManager():
             # decode
             sequences = torch.cat((valid_prompt_ids, valid_response_ids))
             sequences_str = self.tokenizer.decode(sequences)
+            response_str = self.tokenizer.decode(valid_response_ids)
 
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
@@ -193,6 +243,7 @@ class RewardManager():
                     max_plan_steps=self.max_plan_steps,
                     max_reference_steps=self.max_reference_steps,
                     self_consistency_weight=self.self_consistency_weight,
+                    reference_alignment_weight=self.reference_alignment_weight,
                 )
                 score = components["final_score"]
             else:
@@ -204,7 +255,8 @@ class RewardManager():
                                          path_match_strategy=self.path_match_strategy,
                                          require_search_for_format=self.require_search_for_format,
                                          max_reference_steps=self.max_reference_steps,
-                                         self_consistency_weight=self.self_consistency_weight)
+                                         self_consistency_weight=self.self_consistency_weight,
+                                         reference_alignment_weight=self.reference_alignment_weight)
                 components = {
                     "base_score": score,
                     "has_search": 0.0,
@@ -212,6 +264,9 @@ class RewardManager():
                     "effective_retrieval": 1.0,
                     "track_a_bonus": 0.0,
                     "self_consistency_weight": self.self_consistency_weight,
+                    "track_b_bonus": 0.0,
+                    "reference_alignment_weight": self.reference_alignment_weight,
+                    "path_bonus": 0.0,
                     "self_consistency": 0.0,
                     "self_r_planner": 0.0,
                     "self_n_plan": 0.0,
@@ -226,10 +281,16 @@ class RewardManager():
                 }
 
             reward_tensor[i, valid_response_length - 1] = score
+            existing_keys = set(reward_components.keys())
+            for missing_key in existing_keys - set(components.keys()):
+                reward_components[missing_key].append(0.0)
+            for new_key in set(components.keys()) - existing_keys:
+                reward_components[new_key].extend([0.0] * i)
             for key, value in components.items():
                 reward_components[key].append(float(value))
             self._dump_trajectory(
                 solution_str=sequences_str,
+                response_str=response_str,
                 ground_truth=ground_truth,
                 data_source=data_source,
                 components=components,
@@ -244,7 +305,7 @@ class RewardManager():
                 already_print_data_sources[data_source] += 1
                 logger.info("Decoded reward sample for %s:\n%s", data_source, sequences_str)
 
-        data.meta_info["reward_components"] = reward_components
+        data.meta_info["reward_components"] = dict(reward_components)
         return reward_tensor
 
 
@@ -260,8 +321,10 @@ def _reward_manager_kwargs(config):
         "max_plan_steps": getattr(config.reward_model, "max_plan_steps", None),
         "max_reference_steps": getattr(config.reward_model, "max_reference_steps", None),
         "self_consistency_weight": getattr(config.reward_model, "self_consistency_weight", 0.0),
+        "reference_alignment_weight": getattr(config.reward_model, "reference_alignment_weight", 0.0),
         "trajectory_dump_path": getattr(config.reward_model, "trajectory_dump_path", None),
         "trajectory_dump_limit": getattr(config.reward_model, "trajectory_dump_limit", 0),
+        "trajectory_dump_full_solution": getattr(config.reward_model, "trajectory_dump_full_solution", True),
     }
 
 

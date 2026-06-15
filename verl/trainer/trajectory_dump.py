@@ -34,6 +34,13 @@ def _append_trajectory_dump(
     data_source,
     split,
     index=None,
+    question=None,
+    trajectory=None,
+    trajectory_index=None,
+    rollout_index=None,
+    plan_steps=None,
+    search_calls=None,
+    final_answer=None,
     track_a=None,
     track_b=None,
     prompt=None,
@@ -44,6 +51,7 @@ def _append_trajectory_dump(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     row = {
+        "schema_version": 2,
         "solution_str": solution_str,
         "ground_truth": ground_truth,
         "data_source": data_source,
@@ -51,6 +59,20 @@ def _append_trajectory_dump(
     }
     if index is not None:
         row["index"] = index
+    if question is not None:
+        row["question"] = question
+    if trajectory is not None:
+        row["trajectory"] = trajectory
+    if trajectory_index is not None:
+        row["trajectory_index"] = trajectory_index
+    if rollout_index is not None:
+        row["rollout_index"] = rollout_index
+    if plan_steps is not None:
+        row["plan_steps"] = plan_steps
+    if search_calls is not None:
+        row["search_calls"] = search_calls
+    if final_answer is not None:
+        row["final_answer"] = final_answer
     if track_a is not None:
         row["track_a"] = track_a
     if track_b is not None:

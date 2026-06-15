@@ -64,7 +64,7 @@ def test_duplicate_actions_do_not_inflate_reference_coverage():
     assert components["ref_n_covered"] == 1
 
 
-def test_reference_alignment_is_observation_not_final_score():
+def test_reference_alignment_default_weight_does_not_change_final_score():
     solution = (
         "<search>Marie Curie Nobel Prize</search>"
         "<answer>radium</answer>"
@@ -81,6 +81,33 @@ def test_reference_alignment_is_observation_not_final_score():
     assert no_ref_components["final_score"] == ref_components["final_score"]
     assert no_ref_components["reference_alignment"] == 0.0
     assert ref_components["reference_alignment"] == 1.0
+
+
+def test_reference_alignment_weight_adds_track_b_bonus():
+    solution = (
+        "<plan>Step 1: Search Marie Curie Nobel Prize.</plan>"
+        "<think>I need evidence.</think>"
+        "<search>Marie Curie Nobel Prize</search>"
+        "<information>Doc</information>"
+        "<think>I can answer.</think>"
+        "<answer>radium</answer>"
+    )
+    ground_truth = {
+        "target": ["radium"],
+        "reference_steps": ["Search Marie Curie Nobel Prize"],
+    }
+
+    components = qa_em_format.compute_score_components(
+        solution,
+        ground_truth,
+        reference_alignment_weight=0.2,
+    )
+
+    assert components["reference_alignment"] == 1.0
+    assert components["track_b_bonus"] == 0.2
+    assert components["reference_alignment_weight"] == 0.2
+    assert components["path_bonus"] == 0.2
+    assert components["final_score"] == components["base_score"] + 0.2
 
 
 def test_invalid_reference_steps_are_unavailable():

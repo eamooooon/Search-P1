@@ -548,6 +548,11 @@ def is_valid_sequence(text, max_plan_steps=None):
     return True, "Valid sequence format"
 
 
+def has_duplicate_plan(text: str) -> bool:
+    content = _extract_assistant_content(text)
+    return len(re.findall(r"<plan>", content)) > 1 or len(re.findall(r"</plan>", content)) > 1
+
+
 def extract_solution(solution_str):
     """Extract the equation from the solution string."""
 
@@ -607,7 +612,8 @@ def compute_score_em(solution_str,
                      require_search_for_format=False,
                      max_plan_steps=None,
                      max_reference_steps=None,
-                     self_consistency_weight=0.0):
+                     self_consistency_weight=0.0,
+                     reference_alignment_weight=0.0):
     """The scoring function for exact match (EM).
 
     Args:
@@ -631,6 +637,7 @@ def compute_score_em(solution_str,
         max_plan_steps=max_plan_steps,
         max_reference_steps=max_reference_steps,
         self_consistency_weight=self_consistency_weight,
+        reference_alignment_weight=reference_alignment_weight,
     )["final_score"]
 
 
@@ -646,9 +653,11 @@ def compute_score_components(solution_str,
                              require_search_for_format=False,
                              max_plan_steps=None,
                              max_reference_steps=None,
-                             self_consistency_weight=0.0):
+                             self_consistency_weight=0.0,
+                             reference_alignment_weight=0.0):
     validate_path_match_strategy(path_match_strategy)
     is_valid_format, _ = is_valid_sequence(solution_str, max_plan_steps=max_plan_steps)
+    duplicate_plan = has_duplicate_plan(solution_str)
     has_search = has_legal_search(solution_str)
     format_shaping_allowed = (not require_search_for_format) or has_search
     final_format_shaping_allowed = format_shaping_allowed and (
@@ -698,22 +707,34 @@ def compute_score_components(solution_str,
         match_strategy=path_match_strategy,
         max_plan_steps=max_plan_steps,
     )
-    track_a_bonus = self_consistency_weight * self_components["self_consistency"]
+    if duplicate_plan:
+        base_score = 0
+        track_a_bonus = 0.0
+    else:
+        track_a_bonus = self_consistency_weight * self_components["self_consistency"]
     reference_components = compute_reference_alignment_components(
         solution_str,
         ground_truth,
         match_strategy=path_match_strategy,
         max_reference_steps=max_reference_steps,
     )
-    final_score = base_score + track_a_bonus
+    track_b_bonus = 0.0
+    if not duplicate_plan:
+        track_b_bonus = reference_alignment_weight * reference_components["reference_alignment"]
+    path_bonus = track_a_bonus + track_b_bonus
+    final_score = base_score + path_bonus
 
     return {
         "base_score": base_score,
+        "duplicate_plan": float(duplicate_plan),
         "has_search": has_search,
         "effective_structure_format": effective_structure_format,
         "effective_retrieval": effective_retrieval,
         "track_a_bonus": track_a_bonus,
         "self_consistency_weight": self_consistency_weight,
+        "track_b_bonus": track_b_bonus,
+        "reference_alignment_weight": reference_alignment_weight,
+        "path_bonus": path_bonus,
         "final_score": final_score,
         **reference_components,
         **self_components,

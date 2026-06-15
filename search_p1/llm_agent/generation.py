@@ -755,7 +755,11 @@ class LLMGenerationManager:
             extra = " A think block must immediately precede the action tag."
         elif reason == "duplicate_plan":
             if has_planned:
-                extra = " Repeating <plan> after a valid plan is invalid."
+                extra = (
+                    " Repeating <plan> after a valid plan is invalid. "
+                    "Continue from the accepted plan with only <think> followed by "
+                    "<search> or <answer>."
+                )
             else:
                 extra = " Output exactly one valid <plan> block."
 

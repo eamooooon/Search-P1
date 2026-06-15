@@ -15,6 +15,7 @@
 A unified tracking interface that supports logging data to different backend
 """
 import dataclasses
+import atexit
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -35,6 +36,7 @@ class Tracking(object):
                 assert backend in self.supported_backend, f'{backend} is not supported'
 
         self.logger = {}
+        self._finished = False
 
         if 'tracking' in default_backend or 'wandb' in default_backend:
             import wandb
@@ -65,10 +67,39 @@ class Tracking(object):
             self.console_logger = LocalLogger(print_to_console=True)
             self.logger['console'] = self.console_logger
 
+        atexit.register(self.finish)
+
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
                 logger_instance.log(data=data, step=step)
+
+    def finish(self):
+        if self._finished:
+            return
+        self._finished = True
+
+        if 'wandb' in self.logger:
+            try:
+                import wandb
+                wandb.finish()
+            except Exception as exc:
+                print(f"[Tracking] wandb.finish() failed: {exc}")
+
+        if 'swanlab' in self.logger:
+            try:
+                import swanlab
+                if hasattr(swanlab, "finish"):
+                    swanlab.finish()
+            except Exception as exc:
+                print(f"[Tracking] swanlab.finish() failed: {exc}")
+
+        if 'mlflow' in self.logger:
+            try:
+                import mlflow
+                mlflow.end_run()
+            except Exception as exc:
+                print(f"[Tracking] mlflow.end_run() failed: {exc}")
 
 
 class _SwanlabLoggingAdapter:

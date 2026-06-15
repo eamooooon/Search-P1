@@ -151,8 +151,10 @@ reward_model:
   max_plan_steps: null
   max_reference_steps: null
   self_consistency_weight: 0.0
+  reference_alignment_weight: 0.0
   trajectory_dump_path: null
   trajectory_dump_limit: 0
+  trajectory_dump_full_solution: true
 
 retriever:
   url: "http://127.0.0.1:8000/retrieve"

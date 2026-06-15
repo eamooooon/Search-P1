@@ -76,6 +76,35 @@ def test_collect_successful_groups_filters_wrong_answers(tmp_path):
     assert group["trajectories"][0]["actions"] == ["Marie Curie discovery"]
 
 
+def test_collect_successful_groups_respects_collector_accepted_success(tmp_path):
+    trajectory_path = tmp_path / "trajectories.jsonl"
+    _write_jsonl(trajectory_path, [
+        {
+            "data_source": "nq",
+            "split": "train",
+            "index": 0,
+            "ground_truth": {"target": ["radium"]},
+            "solution_str": "<search>Marie Curie discovery</search><answer>radium</answer>",
+            "collection": {"accepted_success": False},
+        },
+        {
+            "data_source": "nq",
+            "split": "train",
+            "index": 0,
+            "ground_truth": {"target": ["radium"]},
+            "solution_str": "<search>Marie Curie discovery</search><answer>polonium</answer>",
+            "collection": {"accepted_success": True},
+        },
+    ])
+
+    groups, stats = reference_sampling.collect_successful_groups(str(trajectory_path))
+
+    group = groups[("id", "nq", "train", "0")]
+    assert stats["correct_rows"] == 1
+    assert group["correct"] == 1
+    assert group["trajectories"][0]["actions"] == ["Marie Curie discovery"]
+
+
 def test_consensus_reference_steps_use_repeated_successful_actions():
     group = {
         "trajectories": [
@@ -93,6 +122,29 @@ def test_consensus_reference_steps_use_repeated_successful_actions():
     )
 
     assert steps == ["Search Marie Curie discovery"]
+
+
+def test_consensus_reference_steps_preserve_average_action_order():
+    group = {
+        "trajectories": [
+            {"actions": ["find bridge", "find architect", "find birthplace"]},
+            {"actions": ["find bridge", "find architect", "find birthplace"]},
+            {"actions": ["find architect", "find bridge", "find birthplace"]},
+        ],
+    }
+
+    steps = reference_voting.build_consensus_reference_steps(
+        group,
+        min_vote_count=2,
+        min_vote_ratio=0.2,
+        max_reference_steps=3,
+    )
+
+    assert steps == [
+        "Search find bridge",
+        "Search find architect",
+        "Search find birthplace",
+    ]
 
 
 def test_build_reference_rows_prefers_llm_votes():
@@ -130,9 +182,10 @@ def test_vote_request_contains_candidate_actions():
     request = reference_voting.build_vote_request(key, group)
 
     assert request["custom_id"] == "id|nq|train|0"
-    content = json.loads(request["messages"][1]["content"])
-    assert content["question"] == "Who discovered radium?"
-    assert content["candidate_actions"][0]["action"] == "Marie Curie discovery"
+    content = request["messages"][1]["content"]
+    assert "Question:\nWho discovered radium?" in content
+    assert "Candidate search actions from successful trajectories:" in content
+    assert "1. (1 successful trajectories) Marie Curie discovery" in content
 
 
 def test_row_question_falls_back_to_solution_str_question_marker():
@@ -191,3 +244,33 @@ def test_trajectory_dump_serializes_multi_answer_arrays(tmp_path):
 
     row = json.loads(path.read_text(encoding="utf-8"))
     assert row["ground_truth"]["target"] == ["answer one", "answer two"]
+
+
+def test_trajectory_dump_writes_structured_rollout_fields(tmp_path):
+    path = tmp_path / "trajectories.jsonl"
+    trajectory_dump._append_trajectory_dump(
+        str(path),
+        solution_str="<plan>...</plan><search>Marie Curie discovery</search><answer>radium</answer>",
+        ground_truth={"target": ["radium"]},
+        data_source="nq",
+        split="train",
+        index=7,
+        question="Who discovered radium?",
+        trajectory="<search>Marie Curie discovery</search><answer>radium</answer>",
+        trajectory_index=3,
+        rollout_index=1,
+        plan_steps=["Marie Curie discovery"],
+        search_calls=["Marie Curie discovery"],
+        final_answer="radium",
+    )
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["schema_version"] == 2
+    assert row["data_source"] == "nq"
+    assert row["split"] == "train"
+    assert row["index"] == 7
+    assert row["question"] == "Who discovered radium?"
+    assert row["trajectory_index"] == 3
+    assert row["rollout_index"] == 1
+    assert row["search_calls"] == ["Marie Curie discovery"]
+    assert row["final_answer"] == "radium"

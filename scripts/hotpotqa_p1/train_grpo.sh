@@ -1,12 +1,14 @@
-data_name=nq_hotpotqa_p1
+data_name=hotpotqa_p1
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
-export DATA_DIR=data/${data_name}
+export DATA_DIR=${DATA_DIR:-data/${data_name}}
 
 WAND_PROJECT="Search-P1"
+SELF_CONSISTENCY_WEIGHT=${SELF_CONSISTENCY_WEIGHT:-0.05}
+REFERENCE_ALIGNMENT_WEIGHT=${REFERENCE_ALIGNMENT_WEIGHT:-0.05}
 
 export BASE_MODEL='models/Qwen2.5-3B-Instruct'
-export EXPERIMENT_NAME=${data_name}-search-p1-grpo-qwen2.5-3b-it-em-plan-format
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-${data_name}-search-p1-grpo-qwen2.5-3b-it-trackab-reference-v22}
 # export BASE_MODEL='models/Qwen2.5-7B'
 # export EXPERIMENT_NAME=${data_name}-search-p1-grpo-qwen2.5-7b-em-plan-format
 # export BASE_MODEL='models/Qwen2.5-7B-Instruct'
@@ -74,8 +76,9 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo_format \
     reward_model.require_search_for_format=true \
     reward_model.max_plan_steps=4 \
     reward_model.max_reference_steps=4 \
-    reward_model.self_consistency_weight=0.05 \
-    reward_model.trajectory_dump_path=logs/$EXPERIMENT_NAME-tracka-v16-feedback-clean-query-20steps.jsonl \
+    reward_model.self_consistency_weight=$SELF_CONSISTENCY_WEIGHT \
+    reward_model.reference_alignment_weight=$REFERENCE_ALIGNMENT_WEIGHT \
+    reward_model.trajectory_dump_path=logs/$EXPERIMENT_NAME.jsonl \
     reward_model.trajectory_dump_limit=23040 \
     max_turns=4 \
     retriever.url="http://127.0.0.1:8000/retrieve" \
