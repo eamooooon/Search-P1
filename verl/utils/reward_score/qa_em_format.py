@@ -15,6 +15,7 @@
 import re
 import string
 import logging
+from collections.abc import Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +303,7 @@ def extract_reference_steps(ground_truth):
     steps = ground_truth.get("reference_steps", [])
     if isinstance(steps, str):
         steps = [steps]
-    if not isinstance(steps, (list, tuple)):
+    if isinstance(steps, Mapping) or not isinstance(steps, Iterable):
         return []
     return [step.strip() for step in steps if isinstance(step, str) and step.strip()]
 

@@ -772,11 +772,14 @@ class RayPPOTrainer(object):
                 reward_tensor_lst.append(reward_tensor)
                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
         else:
+            timing_totals = defaultdict(float)   # accumulated wall-clock per section
+            response_tokens_total = 0            # total generated tokens (response side)
+            samples_total = 0                    # total prompts evaluated
             for batch_dict in self.val_dataloader:
                 timing_raw = {}
                 test_batch: DataProto = DataProto.from_single_dict(batch_dict)
                 # test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
-                
+
                 test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
                 test_gen_batch.meta_info = {
                     'eos_token_id': self.tokenizer.eos_token_id,
@@ -793,15 +796,16 @@ class RayPPOTrainer(object):
                             gen_batch=test_gen_batch,
                             initial_input_ids=first_input_ids,
                         )
-                    
+
                     test_batch = test_batch.union(final_gen_batch_output)
-                    
+
                     for key in test_batch.batch.keys():
                         test_batch.batch[key] = test_batch.batch[key].long()
-                    
+
                     # evaluate using reward_function
                     # for certain reward function (e.g. sandbox), the generation can overlap with reward
-                    reward_tensor = self.val_reward_fn(test_batch)
+                    with _timer('reward', timing_raw):
+                        reward_tensor = self.val_reward_fn(test_batch)
                     for key, values in test_batch.meta_info.get('reward_components', {}).items():
                         reward_component_values[key].extend(values)
                     for reason, count in test_batch.meta_info.get('action_reason_stats', {}).items():
@@ -809,6 +813,16 @@ class RayPPOTrainer(object):
 
                     reward_tensor_lst.append(reward_tensor)
                     data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
+
+                # Accumulate timings + token counts for speed metrics
+                for name, value in timing_raw.items():
+                    timing_totals[name] += float(value)
+                batch_samples = int(reward_tensor.shape[0])
+                samples_total += batch_samples
+                if 'responses' in test_batch.batch:
+                    response_tokens_total += int(test_batch.batch['responses'].ne(self.tokenizer.pad_token_id).sum().item())
+                elif 'response_mask' in test_batch.batch:
+                    response_tokens_total += int(test_batch.batch['response_mask'].sum().item())
 
         reward_tensor = torch.cat([rw.sum(-1) for rw in reward_tensor_lst], dim=0).cpu()  # (batch_size,)
         # reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
@@ -833,6 +847,18 @@ class RayPPOTrainer(object):
             {'action_reason_stats': action_reason_stats},
             prefix='val/env',
         ))
+
+        # ----------------- speed / throughput metrics -----------------
+        if self.config.do_search and samples_total > 0:
+            for name, total_seconds in timing_totals.items():
+                metric_dict[f'val/timing_s/{name}'] = float(total_seconds)
+                metric_dict[f'val/timing_per_sample_s/{name}'] = float(total_seconds) / samples_total
+            metric_dict['val/throughput/samples_per_s'] = (
+                samples_total / timing_totals['step'] if timing_totals.get('step', 0.0) > 0 else 0.0
+            )
+            if response_tokens_total > 0 and timing_totals.get('gen', 0.0) > 0:
+                metric_dict['val/throughput/gen_tokens_per_s'] = response_tokens_total / timing_totals['gen']
+                metric_dict['val/throughput/gen_tokens_per_sample'] = response_tokens_total / samples_total
 
         return metric_dict
 

@@ -1,5 +1,6 @@
 import json
 import re
+from collections.abc import Iterable, Mapping
 
 
 _TAG_PATTERN = re.compile(r"</?[^>]+>")
@@ -18,7 +19,7 @@ def normalize_question(question):
 def normalize_reference_steps(steps, max_reference_steps=None):
     if isinstance(steps, str):
         steps = [steps]
-    if not isinstance(steps, (list, tuple)):
+    if isinstance(steps, Mapping) or not isinstance(steps, Iterable):
         return []
 
     normalized_steps = []
@@ -99,3 +100,20 @@ def lookup_reference_steps(references, data_source, split, index, question):
         if steps:
             return list(steps)
     return []
+
+
+def has_reference_steps(example):
+    if not isinstance(example, dict):
+        return False
+    reward_model = example.get("reward_model")
+    if not isinstance(reward_model, dict):
+        return False
+    ground_truth = reward_model.get("ground_truth")
+    if not isinstance(ground_truth, dict):
+        return False
+    steps = ground_truth.get("reference_steps")
+    if isinstance(steps, str):
+        return bool(steps.strip())
+    if isinstance(steps, Mapping) or not isinstance(steps, Iterable):
+        return False
+    return any(isinstance(step, str) and step.strip() for step in steps)

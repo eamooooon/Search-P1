@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import numpy as np
+
 
 _QA_EM_FORMAT_PATH = Path(__file__).resolve().parents[1] / "verl" / "utils" / "reward_score" / "qa_em_format.py"
 _SPEC = importlib.util.spec_from_file_location("qa_em_format", _QA_EM_FORMAT_PATH)
@@ -28,6 +30,20 @@ def test_reference_alignment_does_not_require_planner():
     assert components["ref_n_steps"] == 1
     assert components["ref_n_actions"] == 1
     assert components["ref_n_covered"] == 1
+
+
+def test_reference_alignment_accepts_parquet_array_reference_steps():
+    solution = "<search>Marie Curie Nobel Prize</search>"
+    ground_truth = {
+        "target": np.array(["radium"], dtype=object),
+        "reference_steps": np.array(["Search Marie Curie Nobel Prize"], dtype=object),
+    }
+
+    components = qa_em_format.compute_reference_alignment_components(solution, ground_truth)
+
+    assert components["reference_alignment"] == 1.0
+    assert components["ref_available"] == 1.0
+    assert components["ref_n_steps"] == 1
 
 
 def test_missing_reference_steps_return_zero_components():

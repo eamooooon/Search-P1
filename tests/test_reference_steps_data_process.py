@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import numpy as np
+
 
 _REFERENCE_STEPS_PATH = Path(__file__).resolve().parents[1] / "scripts" / "data_process" / "reference_steps.py"
 _SPEC = importlib.util.spec_from_file_location("reference_steps", _REFERENCE_STEPS_PATH)
@@ -95,6 +97,23 @@ def test_too_many_reference_steps_drop_row(tmp_path):
     references = reference_steps.load_reference_steps(str(path), max_reference_steps=1)
 
     assert references == {}
+
+
+def test_has_reference_steps_reads_ground_truth_reference_steps():
+    assert reference_steps.has_reference_steps({
+        "reward_model": {
+            "ground_truth": {
+                "reference_steps": np.array(["Search who discovered radium"], dtype=object),
+            },
+        },
+    })
+    assert not reference_steps.has_reference_steps({
+        "reward_model": {
+            "ground_truth": {
+                "reference_steps": [],
+            },
+        },
+    })
 
 
 def test_output_features_accept_empty_and_non_empty_reference_steps():

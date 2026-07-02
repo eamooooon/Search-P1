@@ -27,7 +27,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from reference_steps import load_reference_steps, lookup_reference_steps
+from reference_steps import has_reference_steps, load_reference_steps, lookup_reference_steps
 
 
 def make_prefix(dp, template_type):
@@ -133,8 +133,11 @@ if __name__ == '__main__':
     parser.add_argument('--data_sources', default='nq')
     parser.add_argument('--reference_steps_file', default=None)
     parser.add_argument('--max_reference_steps', type=int, default=None)
+    parser.add_argument('--reference_only', action='store_true')
 
     args = parser.parse_args()
+    if args.reference_only and not args.reference_steps_file:
+        raise ValueError("--reference_only requires --reference_steps_file")
     references = load_reference_steps(
         args.reference_steps_file,
         max_reference_steps=args.max_reference_steps,
@@ -199,6 +202,13 @@ if __name__ == '__main__':
                 "features": output_features(),
             })
         train_dataset = train_dataset.map(**map_kwargs)
+        if args.reference_only:
+            before_filter = len(train_dataset)
+            train_dataset = train_dataset.filter(has_reference_steps)
+            print(
+                "REFERENCE_ONLY_FILTER "
+                f"split=train data_source={data_source} kept={len(train_dataset)} total={before_filter}"
+            )
         all_dataset.append(train_dataset)
 
     local_dir = args.local_dir

@@ -50,6 +50,16 @@ REFERENCE_STEPS_FILE=data/hotpotqa_p1/reference_steps_v22_corrected_llm.jsonl \
 bash scripts/hotpotqa_p1/data_process.sh
 ```
 
+To build a training parquet that keeps only rows with reference steps:
+
+```bash
+REFERENCE_ONLY=1 bash scripts/hotpotqa_p1/data_process.sh
+```
+
+By default this filters only `train.parquet`, while `test.parquet` stays
+non-empty for validation. To filter both splits, set
+`REFERENCE_ONLY_SPLITS=train,test`.
+
 ## Train
 
 ```bash

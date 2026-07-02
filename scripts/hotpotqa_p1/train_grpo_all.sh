@@ -4,21 +4,14 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 export DATA_DIR=${DATA_DIR:-data/${data_name}}
 
 WAND_PROJECT="Search-P1"
-SELF_CONSISTENCY_WEIGHT=${SELF_CONSISTENCY_WEIGHT:-0.3}
-REFERENCE_ALIGNMENT_WEIGHT=${REFERENCE_ALIGNMENT_WEIGHT:-0.05}
+SELF_CONSISTENCY_WEIGHT=${SELF_CONSISTENCY_WEIGHT:-0}
+REFERENCE_ALIGNMENT_WEIGHT=${REFERENCE_ALIGNMENT_WEIGHT:-0.3}
 
-# export BASE_MODEL='models/Qwen2.5-3B-Instruct'
-export BASE_MODEL='checkpoints/nq_hotpotqa_p1-search-p1-sft-qwen2.5-3b-it-format/global_step_156'
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-${data_name}-grpo-qwen2.5-3b-sft-v20-trackab-reference-v22}
-# export BASE_MODEL='models/Qwen2.5-7B'
-# export EXPERIMENT_NAME=${data_name}-search-p1-grpo-qwen2.5-7b-em-plan-format
-# export BASE_MODEL='models/Qwen2.5-7B-Instruct'
-# export EXPERIMENT_NAME=${data_name}-search-p1-grpo-qwen2.5-7b-it-em-plan-format
+export BASE_MODEL='models/Qwen2.5-3B-Instruct'
+# export BASE_MODEL='checkpoints/nq_hotpotqa_p1-search-p1-sft-qwen2.5-3b-it-format/global_step_156'
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-${data_name}-grpo-qwen2.5-3b-v22-b}
 
-# set -x
 export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has some issues
-
-# max_prompt_length = (config['training']['max_start_length'] + config['training']['max_response_length'] * (config['training']['max_turns'] - 1) + config['training']['max_obs_length'] * config['training']['max_turns'])
 
 PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo_format \
     data.train_files=$DATA_DIR/train.parquet \
