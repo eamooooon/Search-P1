@@ -18,6 +18,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 from verl import DataProto
 import torch
 from verl.utils.reward_score import qa_em, qa_em_format
+from verl.trainer.trajectory_dump import _append_trajectory_dump
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
@@ -33,13 +34,74 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, structure_format_score=0., final_format_score=0., retrieval_score=0., format_score=0.) -> None:
+    def __init__(self,
+                 tokenizer,
+                 num_examine,
+                 structure_format_score=0.,
+                 final_format_score=0.,
+                 retrieval_score=0.,
+                 format_score=0.,
+                 require_search_for_format=False,
+                 self_consistency_weight=0.0,
+                 trajectory_dump_path=None,
+                 trajectory_dump_limit=0,
+                 trajectory_dump_split=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
         self.structure_format_score = structure_format_score
         self.final_format_score = final_format_score
         self.retrieval_score = retrieval_score
+        self.require_search_for_format = require_search_for_format
+        self.self_consistency_weight = self_consistency_weight
+        self.trajectory_dump_path = trajectory_dump_path
+        self.trajectory_dump_limit = int(trajectory_dump_limit or 0)
+        self.trajectory_dump_split = trajectory_dump_split
+        self._trajectory_dump_count = 0
+
+    def _should_dump_trajectory(self):
+        if not self.trajectory_dump_path:
+            return False
+        if self.trajectory_dump_limit == 0:
+            return False
+        return self.trajectory_dump_limit < 0 or self._trajectory_dump_count < self.trajectory_dump_limit
+
+    def _dump_trajectory(self, *, solution_str, ground_truth, data_source, components, extra_info=None):
+        if not self._should_dump_trajectory():
+            return
+
+        dump_split = self.trajectory_dump_split
+        dump_index = self._trajectory_dump_count
+        if isinstance(extra_info, dict):
+            dump_split = extra_info.get("split", dump_split)
+            dump_index = extra_info.get("index", dump_index)
+
+        track_a_components = {
+            key: components[key]
+            for key in (
+                "base_score",
+                "has_search",
+                "effective_structure_format",
+                "effective_retrieval",
+                "final_score",
+                "self_consistency",
+                "self_r_planner",
+                "self_n_plan",
+                "self_n_actions",
+                "self_n_exec",
+            )
+            if key in components
+        }
+        _append_trajectory_dump(
+            self.trajectory_dump_path,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            data_source=data_source,
+            split=dump_split,
+            index=dump_index,
+            track_a=track_a_components,
+        )
+        self._trajectory_dump_count += 1
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -50,7 +112,20 @@ class RewardManager():
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
 
-        # all_scores = []
+        reward_components = {
+            "base_score": [],
+            "has_search": [],
+            "effective_structure_format": [],
+            "effective_retrieval": [],
+            "track_a_bonus": [],
+            "self_consistency_weight": [],
+            "self_consistency": [],
+            "self_r_planner": [],
+            "self_n_plan": [],
+            "self_n_actions": [],
+            "self_n_exec": [],
+            "final_score": [],
+        }
 
         already_print_data_sources = {}
 
@@ -76,16 +151,52 @@ class RewardManager():
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
+            extra_info = data_item.non_tensor_batch.get('extra_info', {})
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, 
-                                     structure_format_score=self.structure_format_score, 
-                                     final_format_score=self.final_format_score, 
-                                     retrieval_score=self.retrieval_score,
-                                     format_score=self.format_score)
+            if compute_score_fn is qa_em_format.compute_score_em:
+                components = qa_em_format.compute_score_components(
+                    solution_str=sequences_str,
+                    ground_truth=ground_truth,
+                    structure_format_score=self.structure_format_score,
+                    final_format_score=self.final_format_score,
+                    retrieval_score=self.retrieval_score,
+                    format_score=self.format_score,
+                    require_search_for_format=self.require_search_for_format,
+                    self_consistency_weight=self.self_consistency_weight,
+                )
+                score = components["final_score"]
+            else:
+                score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth,
+                                         structure_format_score=self.structure_format_score,
+                                         final_format_score=self.final_format_score,
+                                         retrieval_score=self.retrieval_score,
+                                         format_score=self.format_score)
+                components = {
+                    "base_score": score,
+                    "has_search": 0.0,
+                    "effective_structure_format": 1.0,
+                    "effective_retrieval": 1.0,
+                    "track_a_bonus": 0.0,
+                    "self_consistency_weight": self.self_consistency_weight,
+                    "self_consistency": 0.0,
+                    "self_r_planner": 0.0,
+                    "self_n_plan": 0.0,
+                    "self_n_actions": 0.0,
+                    "self_n_exec": 0.0,
+                    "final_score": score,
+                }
 
             reward_tensor[i, valid_response_length - 1] = score
-            # all_scores.append(score)
+            for key, value in components.items():
+                reward_components[key].append(float(value))
+            self._dump_trajectory(
+                solution_str=sequences_str,
+                ground_truth=ground_truth,
+                data_source=data_source,
+                components=components,
+                extra_info=extra_info,
+            )
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -94,7 +205,20 @@ class RewardManager():
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
 
+        data.meta_info["reward_components"] = reward_components
         return reward_tensor
+
+
+def _reward_manager_kwargs(config):
+    return {
+        "structure_format_score": config.reward_model.structure_format_score,
+        "final_format_score": config.reward_model.final_format_score,
+        "retrieval_score": config.reward_model.retrieval_score,
+        "require_search_for_format": getattr(config.reward_model, "require_search_for_format", False),
+        "self_consistency_weight": getattr(config.reward_model, "self_consistency_weight", 0.0),
+        "trajectory_dump_path": getattr(config.reward_model, "trajectory_dump_path", None),
+        "trajectory_dump_limit": getattr(config.reward_model, "trajectory_dump_limit", 0),
+    }
 
 
 import ray
@@ -127,6 +251,7 @@ def main_task(config):
     from omegaconf import OmegaConf
     pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
     OmegaConf.resolve(config)
+    reward_config = _reward_manager_kwargs(config)
 
     # env_class = ENV_CLASS_MAPPING[config.env.name]
 
@@ -187,13 +312,10 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, 
-                              structure_format_score=config.reward_model.structure_format_score, 
-                              final_format_score=config.reward_model.final_format_score,
-                              retrieval_score=config.reward_model.retrieval_score)
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, trajectory_dump_split="train", **reward_config)
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, trajectory_dump_split="val", **reward_config)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,

@@ -177,6 +177,39 @@ def _compute_response_info(batch):
     )
 
 
+REWARD_COMPONENT_KEYS = (
+    "base_score",
+    "has_search",
+    "effective_structure_format",
+    "effective_retrieval",
+    "track_a_bonus",
+    "self_consistency_weight",
+    "self_consistency",
+    "self_r_planner",
+    "self_n_plan",
+    "self_n_actions",
+    "self_n_exec",
+    "final_score",
+)
+
+
+def _compute_reward_component_metrics(meta_info, prefix='reward'):
+    metrics = {}
+    reward_components = meta_info.get('reward_components')
+    if not reward_components:
+        return metrics
+
+    for component_name in REWARD_COMPONENT_KEYS:
+        values = reward_components.get(component_name, [])
+        component_values = np.asarray(values, dtype=np.float32).reshape(-1)
+        if component_values.size == 0:
+            continue
+        metrics[f'{prefix}/{component_name}/mean'] = float(component_values.mean())
+        metrics[f'{prefix}/{component_name}/max'] = float(component_values.max())
+        metrics[f'{prefix}/{component_name}/min'] = float(component_values.min())
+    return metrics
+
+
 def compute_data_metrics(batch, use_critic=True):
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
@@ -276,6 +309,7 @@ def compute_data_metrics(batch, use_critic=True):
     if 'valid_search_stats' in batch.meta_info:
         metrics['env/number_of_valid_search'] = float(np.array(batch.meta_info['valid_search_stats'], dtype=np.int16).mean())
 
+    metrics.update(_compute_reward_component_metrics(batch.meta_info))
 
     return metrics
 
@@ -583,6 +617,7 @@ class RayPPOTrainer(object):
         import torch
         reward_tensor_lst = []
         data_source_lst = []
+        reward_component_values = defaultdict(list)
 
         gen_config = GenerationConfig(
             max_turns=self.config.max_turns,
@@ -633,6 +668,8 @@ class RayPPOTrainer(object):
                 # evaluate using reward_function
                 # for certain reward function (e.g. sandbox), the generation can overlap with reward
                 reward_tensor = self.val_reward_fn(test_batch)
+                for key, values in test_batch.meta_info.get('reward_components', {}).items():
+                    reward_component_values[key].extend(values)
 
                 reward_tensor_lst.append(reward_tensor)
                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -667,6 +704,8 @@ class RayPPOTrainer(object):
                     # evaluate using reward_function
                     # for certain reward function (e.g. sandbox), the generation can overlap with reward
                     reward_tensor = self.val_reward_fn(test_batch)
+                    for key, values in test_batch.meta_info.get('reward_components', {}).items():
+                        reward_component_values[key].extend(values)
 
                     reward_tensor_lst.append(reward_tensor)
                     data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -685,6 +724,11 @@ class RayPPOTrainer(object):
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+
+        metric_dict.update(_compute_reward_component_metrics(
+            {'reward_components': reward_component_values},
+            prefix='val/reward',
+        ))
 
         return metric_dict
 

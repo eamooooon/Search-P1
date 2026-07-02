@@ -46,6 +46,18 @@ def em_check(prediction, golden_answers):
     return score
 
 
+def extract_assistant_content(solution_str):
+    assistant_marker = "<|im_start|>assistant"
+    if assistant_marker in solution_str:
+        solution_str = solution_str.rsplit(assistant_marker, 1)[1]
+        solution_str = solution_str.split("<|im_end|>", 1)[0]
+    return re.sub(
+        r"My previous action is invalid\.[^\n]*Let me try again\.",
+        "",
+        solution_str,
+    )
+
+
 def is_valid_sequence(text):
     # Find the position of "<|im_start|>assistant" with potential whitespace
     assistant_pattern = r"<\|im_start\|>assistant\s*"
@@ -56,7 +68,7 @@ def is_valid_sequence(text):
     
     # Extract the content after the assistant marker
     start_pos = assistant_match.end()
-    content = text[start_pos:]
+    content = text[start_pos:].split("<|im_end|>", 1)[0]
     
     # Check for balanced tags
     tags_to_check = ["think", "search", "information", "answer"]
@@ -124,15 +136,7 @@ def is_valid_sequence(text):
 def extract_solution(solution_str):
     """Extract the equation from the solution string."""
 
-    assistant_marker = "<|im_start|>assistant"
-    if assistant_marker in solution_str:
-        solution_str = solution_str.rsplit(assistant_marker, 1)[1]
-        solution_str = solution_str.split("<|im_end|>", 1)[0]
-    solution_str = re.sub(
-        r"My previous action is invalid\.[^\n]*Let me try again\.",
-        "",
-        solution_str,
-    )
+    solution_str = extract_assistant_content(solution_str)
 
     answer_pattern = r'<answer>(.*?)</answer>'
     match = re.finditer(answer_pattern, solution_str, re.DOTALL)
@@ -146,9 +150,21 @@ def extract_solution(solution_str):
 
 
 def extract_information_blocks(text: str) -> list[str]:
+    text = extract_assistant_content(text)
     pattern = r"<information>(.*?)</information>"
     matches = re.findall(pattern, text, re.DOTALL)
     return [match.strip() for match in matches]
+
+
+def extract_search_queries(text: str) -> list[str]:
+    text = extract_assistant_content(text)
+    pattern = r"<search>(.*?)</search>"
+    matches = re.findall(pattern, text, re.DOTALL)
+    return [match.strip() for match in matches if match.strip()]
+
+
+def has_legal_search(text: str) -> bool:
+    return len(extract_search_queries(text)) > 0
 
 
 def is_retrieval_correct(text: str, golden_answers: list[str]) -> list[str]:
@@ -160,7 +176,27 @@ def is_retrieval_correct(text: str, golden_answers: list[str]) -> list[str]:
     return False
 
 
-def compute_score_em(solution_str, ground_truth, method='strict', structure_format_score=0, final_format_score=0, retrieval_score=0, format_score=0, score=1.):
+def compute_self_consistency_components(solution_str):
+    """Search-R1 has no explicit planner; keep planner fields comparable."""
+    return {
+        "self_consistency": 0.0,
+        "self_r_planner": 0.0,
+        "self_n_plan": 0,
+        "self_n_actions": len(extract_search_queries(solution_str)),
+        "self_n_exec": 0,
+    }
+
+
+def compute_score_components(solution_str,
+                             ground_truth,
+                             method='strict',
+                             structure_format_score=0,
+                             final_format_score=0,
+                             retrieval_score=0,
+                             format_score=0,
+                             score=1.,
+                             require_search_for_format=False,
+                             self_consistency_weight=0.0):
     """The scoring function for exact match (EM).
 
     Args:
@@ -171,36 +207,86 @@ def compute_score_em(solution_str, ground_truth, method='strict', structure_form
         score: the score for the correct answer
     """
     is_valid_format, _ = is_valid_sequence(solution_str)
+    has_search = has_legal_search(solution_str)
+    format_shaping_allowed = (not require_search_for_format) or has_search
+    final_format_shaping_allowed = format_shaping_allowed and (
+        (not require_search_for_format) or is_valid_format
+    )
+    effective_structure_format = 1.0 if format_shaping_allowed else 0.0
+    effective_retrieval = 1.0 if format_shaping_allowed else 0.0
     retrieval_correct = False
-    if is_valid_format:
+    if is_valid_format and format_shaping_allowed:
         retrieval_correct = is_retrieval_correct(solution_str, ground_truth['target'])
     answer = extract_solution(solution_str=solution_str)
+
+    if answer is None:
+        if is_valid_format and format_shaping_allowed:
+            if retrieval_correct:
+                base_score = structure_format_score + retrieval_score # 0.3
+            else:
+                base_score = structure_format_score # 0.2
+        else:
+            base_score = 0
+    else:
+        if em_check(answer, ground_truth['target']):
+            if is_valid_format:
+                base_score = score # 1
+            else:
+                base_score = score - structure_format_score # 0.8
+        elif is_valid_format and format_shaping_allowed:
+            if retrieval_correct:
+                base_score = structure_format_score + retrieval_score # 0.3
+            else:
+                base_score = structure_format_score # 0.2
+        elif final_format_shaping_allowed:
+            base_score = final_format_score # 0.1
+        else:
+            base_score = 0
+
+    self_components = compute_self_consistency_components(solution_str)
+    track_a_bonus = self_consistency_weight * self_components["self_consistency"]
+    final_score = base_score + track_a_bonus
+
+    return {
+        "base_score": base_score,
+        "has_search": has_search,
+        "effective_structure_format": effective_structure_format,
+        "effective_retrieval": effective_retrieval,
+        "track_a_bonus": track_a_bonus,
+        "self_consistency_weight": self_consistency_weight,
+        "final_score": final_score,
+        **self_components,
+    }
+
+
+def compute_score_em(solution_str,
+                     ground_truth,
+                     method='strict',
+                     structure_format_score=0,
+                     final_format_score=0,
+                     retrieval_score=0,
+                     format_score=0,
+                     score=1.,
+                     require_search_for_format=False,
+                     self_consistency_weight=0.0):
     do_print = random.randint(1, 64) == 1
-    
+    answer = extract_solution(solution_str=solution_str)
+
     if do_print:
         print(f"--------------------------------")
         print(f"Golden answers: {ground_truth['target']}")
         print(f"Extracted answer: {answer}")
         print(f"Solution string: {solution_str}")
-            
-    if answer is None:
-        if is_valid_format:
-            if retrieval_correct:
-                return structure_format_score + retrieval_score # 0.3
-            else:
-                return structure_format_score # 0.2
-        else:
-            return 0
-    else:
-        if em_check(answer, ground_truth['target']):
-            if is_valid_format:
-                return score # 1
-            else:
-                return score - structure_format_score # 0.8
-        elif is_valid_format:
-            if retrieval_correct:
-                return structure_format_score + retrieval_score # 0.3
-            else:
-                return structure_format_score # 0.2
-        else:
-            return final_format_score # 0.1
+
+    return compute_score_components(
+        solution_str=solution_str,
+        ground_truth=ground_truth,
+        method=method,
+        structure_format_score=structure_format_score,
+        final_format_score=final_format_score,
+        retrieval_score=retrieval_score,
+        format_score=format_score,
+        score=score,
+        require_search_for_format=require_search_for_format,
+        self_consistency_weight=self_consistency_weight,
+    )["final_score"]
